@@ -11,9 +11,9 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/api/sp', require('./routes/api/sp'));
-app.use('/api/acc', require('./routes/api/acc'));
-app.use('/api/bridge', require('./routes/api/bridge'));
+
+// Rutas
+app.use('/api', require('./routes/api'));
 
 // Error handler
 app.use((err, req, res, next) => {

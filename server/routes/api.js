@@ -1,6 +1,6 @@
 const router = require('express').Router();
 
 // Auth (Access Token)
-router.use('/auth', require('./api/auth'));
+router.use('/health', require('./api/health'));
 
 module.exports = router;

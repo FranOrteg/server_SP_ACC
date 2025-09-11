@@ -1,11 +1,16 @@
 @host = http://localhost:3000
 
 ## Rutas ##
-@urlAuth = /api/auth
+@urlHealth = /api/health
+@urlSharePoint = /api/sp/drives?siteId=labit.sharepoint.com,abc,def
 
+##############
+### HEALTH ###
+##############
 
-###################
-### ACCESSTOKEN ###
-###################
+GET {{host}}{{urlHealth}}
 
-GET {{host}}{{urlAuth}}
+##################
+### SHAREPOINT ###
+##################
+GET {{host}}{{urlSharePoint}}
