@@ -1,24 +1,24 @@
 const express = require('express');
 const path = require('path');
-const cookieParser = require('cookie-parser');
 const logger = require('morgan');
-
-// Cross-Origin Resource Sharing
-const cors  = require('cors');
-
+const cors = require('cors');
+const { port } = require('./config/env');
 
 const app = express();
-
-
-app.use(cors());
 app.use(logger('dev'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
-app.use(cookieParser());
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true }));
+
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/api/sp', require('./routes/api/sp'));
+app.use('/api/acc', require('./routes/api/acc'));
+app.use('/api/bridge', require('./routes/api/bridge'));
 
-
-// Rutas
-app.use('/api', require('./routes/api'));
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('❌', err);
+  res.status(err.status || 500).json({ error: err.message || 'Internal Error' });
+});
 
 module.exports = app;
