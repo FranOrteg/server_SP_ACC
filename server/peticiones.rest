@@ -1,0 +1,11 @@
+@host = http://localhost:3000
+
+## Rutas ##
+@urlAuth = /api/auth
+
+
+###################
+### ACCESSTOKEN ###
+###################
+
+GET {{host}}{{urlAuth}}
