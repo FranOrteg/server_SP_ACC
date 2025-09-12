@@ -1,31 +1,23 @@
-const { getThreeLeggedClient, ForgeSDK } = require('../clients/apsClient');
+// services/acc.service.js
+const aps = require('../clients/apsClient');
 
-/**
- * Nota: Necesitamos el access_token del usuario (3-legged) que guardaremos al loguearse.
- * Aquí asumimos que nos llega `credentials` con access_token válido (y refresh si hace falta).
- */
-
-async function listHubs(credentials) {
-  const hubsApi = new ForgeSDK.HubsApi();
-  const { body } = await hubsApi.getHubs({}, null, credentials);
-  return body.data || [];
+// Hubs del usuario (ACC/BIM 360)
+async function listHubs() {
+  return await aps.apiGet('/project/v1/hubs');
 }
 
-async function listProjects(credentials, hubId) {
-  const projectsApi = new ForgeSDK.ProjectsApi();
-  const { body } = await projectsApi.getHubProjects(hubId, {}, null, credentials);
-  return body.data || [];
+// Proyectos dentro de un hub
+async function listProjects(hubId) {
+  return await aps.apiGet(`/project/v1/hubs/${hubId}/projects`);
 }
 
-async function listFolderContents(credentials, projectId, folderId) {
-  const foldersApi = new ForgeSDK.FoldersApi();
-  const { body } = await foldersApi.getFolderContents(projectId, folderId, {}, null, credentials);
-  return body.data || [];
+// Carpetas raíz de un proyecto
+async function listTopFolders(projectId) {
+  return await aps.apiGet(`/data/v1/projects/${encodeURIComponent(projectId)}/topFolders`);
 }
 
-module.exports = {
-  getThreeLeggedClient,
-  listHubs,
-  listProjects,
-  listFolderContents
+module.exports = { 
+    listHubs, 
+    listProjects, 
+    listTopFolders
 };

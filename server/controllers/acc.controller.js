@@ -1,30 +1,61 @@
+// controllers/acc.controller.js
+const aps = require('../clients/apsClient');
 const acc = require('../services/acc.service');
 
-/**
- * Asumimos que guardas el token 3-legged del usuario en req.user.credentials
- * (Lo conectamos más tarde con tu /api/auth)
- */
-async function listHubs(req, res, next) {
+function login(req, res) {
+  const raw = (req.query.scopes || '').trim();
+  const scopes = raw ? raw.split(/[,\s]+/).filter(Boolean) : undefined;
+  const url = aps.getAuthUrl(scopes);
+  res.redirect(url);
+}
+
+function loginUrl(req, res) {
+  const raw = (req.query.scopes || '').trim();
+  const scopes = raw ? raw.split(/[,\s]+/).filter(Boolean) : undefined;
+  const url = aps.getAuthUrl(scopes);
+  res.json({ authorizeUrl: url });
+}
+
+async function callback(req, res, next) {
   try {
-    const hubs = await acc.listHubs(req.user.credentials);
-    res.json(hubs);
+    const { code } = req.query;
+    if (!code) return res.status(400).json({ error: 'code ausente' });
+    await aps.exchangeCodeForTokens(code);
+    res.send('✅ Autodesk ACC conectado. Ya puedes probar /api/acc/hubs');
   } catch (e) { next(e); }
 }
 
-async function listProjects(req, res, next) {
+async function hubs(req, res, next) {
+  try {
+    const data = await acc.listHubs();
+    res.json(data);
+  } catch (e) { next(e); }
+}
+
+async function projects(req, res, next) {
   try {
     const { hubId } = req.query;
-    const projects = await acc.listProjects(req.user.credentials, hubId);
-    res.json(projects);
+    if (!hubId) return res.status(400).json({ error: 'hubId requerido' });
+    const data = await acc.listProjects(hubId);
+    res.json(data);
   } catch (e) { next(e); }
 }
 
-async function listFolder(req, res, next) {
+async function topFolders(req, res, next) {
   try {
-    const { projectId, folderId } = req.query;
-    const items = await acc.listFolderContents(req.user.credentials, projectId, folderId);
-    res.json(items);
+    const { projectId } = req.query;
+    if (!projectId) return res.status(400).json({ error: 'projectId requerido' });
+    const data = await acc.listTopFolders(projectId);
+    res.json(data);
   } catch (e) { next(e); }
 }
 
-module.exports = { listHubs, listProjects, listFolder };
+module.exports = { 
+    login, 
+    loginUrl,
+    callback, 
+    hubs, 
+    projects, 
+    topFolders 
+    
+};

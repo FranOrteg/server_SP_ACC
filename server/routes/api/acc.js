@@ -1,11 +1,16 @@
+// routes/api/acc.js
+
 const router = require('express').Router();
 const ctrl = require('../../controllers/acc.controller');
 
-// Middleware temporal: MOCK de credenciales 3-legged en req.user.credentials
-router.use((req,res,next)=>{ req.user = req.user || {}; req.user.credentials = req.app.get('apsCredentials') || null; next(); });
+// OAuth
+router.get('/auth/login', ctrl.login);
+router.get('/auth/callback', ctrl.callback);
+router.get('/auth/url', ctrl.loginUrl);
 
-router.get('/hubs', ctrl.listHubs);
-router.get('/projects', ctrl.listProjects);
-router.get('/list', ctrl.listFolder);
+// Data Management
+router.get('/hubs', ctrl.hubs);
+router.get('/projects', ctrl.projects);
+router.get('/top-folders', ctrl.topFolders);
 
 module.exports = router;
