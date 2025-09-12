@@ -2,7 +2,8 @@
 
 ## Rutas ##
 @urlHealth = /api/health
-@urlSharePoint = /api/sp/drives?siteId=labit.sharepoint.com,abc,def
+@urlSP = /api/sp
+@DRIVE_ID = b!wCLoO5R470CbsFahzwmPA1nsRN_Yzj5Hl19_Us3vS4cjH0pJvN-0RYtKpZuFZ_W9
 
 ##############
 ### HEALTH ###
@@ -13,4 +14,28 @@ GET {{host}}{{urlHealth}}
 ##################
 ### SHAREPOINT ###
 ##################
-GET {{host}}{{urlSharePoint}}
+
+### 0) Confirma hostname del tenant
+GET {{host}}/api/sp/root
+
+### 1) Busca el sitio (prueba con varias claves)
+GET {{host}}/api/sp/find-sites?q=projects
+
+# El JSON te devolverá candidatos con webUrl, p.ej.:
+#   https://labitgroup.sharepoint.com/teams/Proyectos
+#   https://labitgroup.sharepoint.com/sites/Proyectos-Obras
+# Copia la que sea tu sitio real.
+
+### 2) Lista drives directamente por URL (sin siteId)
+GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/projects
+# o reemplaza con la webUrl exacta que te devolvió find-sites
+
+### 3) (Opcional) Si quieres el siteId explícito
+GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/teams/projects
+
+### 4) (Opcional) Lista carpeta dentro de un drive
+# Sustituye DRIVE_ID por la id de la biblioteca devuelta en el paso 2/3
+GET {{host}}{{urlSP}}/list?driveId={{DRIVE_ID}}/root:/&path=Carpeta/Subcarpeta
+
+### Listar raíz de la biblioteca
+GET {{host}}{{urlSP}}/list?driveId={{DRIVE_ID}}
