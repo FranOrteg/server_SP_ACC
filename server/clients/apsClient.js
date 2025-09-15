@@ -14,6 +14,8 @@ const APS_API_BASE  = 'https://developer.api.autodesk.com';
 // ⚠️ demo: tokens en memoria (una sola sesión). Luego lo cambiamos a store por usuario.
 let TOKENS = null;
 
+function isAbs(u) { return /^https?:\/\//i.test(u); }
+
 // clients/apsClient.js
 function defaultScopes() {
   return [
@@ -27,13 +29,10 @@ function defaultScopes() {
   ];
 }
 
-function getAccessToken() { return TOKENS?.access_token || null; }
-async function ensureAccessToken() { await refreshIfNeeded(); return TOKENS?.access_token; }
-
 function getAuthUrl(scopes, prompt) {
   const wanted = Array.isArray(scopes) && scopes.length ? scopes : defaultScopes();
 
-  // Sanitiza scopes: quita vacíos/duplicados y sólo deja los conocidos
+  // Limpiar/validar scopes
   const allowed = new Set([
     'openid', 'offline_access',
     'data:read', 'data:write', 'data:create',
@@ -41,7 +40,7 @@ function getAuthUrl(scopes, prompt) {
   ]);
   const clean = [...new Set(wanted.filter(s => allowed.has(s)))];
 
-  // Codificamos espacios como %20 pero mantenemos los ":" intactos
+  // Espacios -> %20; mantener ":" sin codificar
   const scopeStr = clean.join(' ').replace(/ /g, '%20');
 
   const base = `${APS_AUTH_BASE}/authorize`;
@@ -55,6 +54,7 @@ function getAuthUrl(scopes, prompt) {
   return `${base}?response_type=code&client_id=${client}&redirect_uri=${redirect}` +
          `&scope=${scopeStr}${promptPart}&state=${encodeURIComponent(state)}`;
 }
+
 
 async function exchangeCodeForTokens(code) {
   const body = qs.stringify({
@@ -97,7 +97,8 @@ function stampExpiry(tokenResponse) {
 
 async function apiGet(path, opts = {}) {
   const { access_token } = await refreshIfNeeded();
-  const { data } = await axios.get(`${APS_API_BASE}${path}`, {
+  const url = isAbs(path) ? path : `${APS_API_BASE}${path}`;
+  const { data } = await axios.get(url, {
     ...opts,
     headers: { Authorization: `Bearer ${access_token}`, ...(opts.headers || {}) }
   });
@@ -106,10 +107,19 @@ async function apiGet(path, opts = {}) {
 
 async function apiPost(path, body, opts = {}) {
   const { access_token } = await refreshIfNeeded();
-  const { data } = await axios.post(`${APS_API_BASE}${path}`, body, {
+  const url = isAbs(path) ? path : `${APS_API_BASE}${path}`;
+  const { data } = await axios.post(url, body, {
     ...opts,
     headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json', ...(opts.headers || {}) }
   });
+  return data;
+}
+
+async function apiPut(path, bodyOrBuffer, opts = {}) {
+  const { access_token } = await refreshIfNeeded();
+  const url = isAbs(path) ? path : `${APS_API_BASE}${path}`;
+  const headers = { Authorization: `Bearer ${access_token}`, ...(opts.headers || {}) };
+  const { data } = await axios.put(url, bodyOrBuffer, { ...opts, headers });
   return data;
 }
 
@@ -118,6 +128,5 @@ module.exports = {
   exchangeCodeForTokens,
   apiGet,
   apiPost,
-  getAccessToken,
-  ensureAccessToken
+  apiPut,
 };

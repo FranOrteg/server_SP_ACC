@@ -38,3 +38,8 @@ GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/teams/project
 
 GET http://localhost:3000/api/acc/hubs
 
+### 
+GET http://localhost:3000/api/acc/projects?hubId=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
+
+###
+GET http://localhost:3000/api/acc/top-folders?projectId=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825

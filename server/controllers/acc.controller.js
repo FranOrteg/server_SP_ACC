@@ -6,14 +6,14 @@ const acc = require('../services/acc.service');
 function login(req, res) {
   const raw = (req.query.scopes || '').trim();
   const scopes = raw ? raw.split(/[,\s]+/).filter(Boolean) : undefined;
-  const url = aps.getAuthUrl(scopes, req.query.prompt); // <-- pasa prompt
+  const url = aps.getAuthUrl(scopes, req.query.prompt);
   res.redirect(url);
 }
 
 function loginUrl(req, res) {
   const raw = (req.query.scopes || '').trim();
   const scopes = raw ? raw.split(/[,\s]+/).filter(Boolean) : undefined;
-  const url = aps.getAuthUrl(scopes, req.query.prompt); // <-- pasa prompt
+  const url = aps.getAuthUrl(scopes, req.query.prompt);
   res.json({ authorizeUrl: url });
 }
 
@@ -40,9 +40,9 @@ async function hubs(req, res, next) {
 
 async function projects(req, res, next) {
   try {
-    const { hubId } = req.query;
+    const { hubId, all, limit } = req.query;
     if (!hubId) return res.status(400).json({ error: 'hubId requerido' });
-    const data = await acc.listProjects(hubId);
+    const data = await acc.listProjects(hubId, { all: all === 'true', limit: Number(limit) || 200 });
     res.json(data);
   } catch (e) { next(e); }
 }
@@ -56,12 +56,21 @@ async function topFolders(req, res, next) {
   } catch (e) { next(e); }
 }
 
+async function listFolder(req, res, next) {
+  try {
+    const { projectId, folderId, all, limit } = req.query;
+    if (!projectId || !folderId) return res.status(400).json({ error: 'projectId y folderId requeridos' });
+    const data = await acc.listFolderContents(projectId, folderId, { all: all === 'true', limit: Number(limit) || 200 });
+    res.json(data);
+  } catch (e) { next(e); }
+}
+
 module.exports = { 
     login, 
     loginUrl,
     callback, 
     hubs, 
     projects, 
-    topFolders 
-    
+    topFolders, 
+    listFolder
 };

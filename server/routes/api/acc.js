@@ -12,5 +12,6 @@ router.get('/auth/url', ctrl.loginUrl);
 router.get('/hubs', ctrl.hubs);
 router.get('/projects', ctrl.projects);
 router.get('/top-folders', ctrl.topFolders);
+router.get('/list', ctrl.listFolder);
 
 module.exports = router;

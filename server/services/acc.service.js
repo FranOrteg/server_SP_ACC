@@ -7,19 +7,42 @@ const { ensureAccessToken } = require('../clients/apsClient');
 
 // const token = await ensureAccessToken();
 
-// Hubs del usuario (ACC/BIM 360)
+// Helper: recorre todas las páginas siguiendo links.next
+async function fetchAllJsonApi(firstPath) {
+  let url = firstPath;
+  const all = [];
+  while (url) {
+    const page = await aps.apiGet(url);
+    if (Array.isArray(page?.data)) all.push(...page.data);
+    url = page?.links?.next?.href || null;
+  }
+  return all;
+}
+
+// Hubs del usuario (ya lo tienes)
 async function listHubs() {
   return await aps.apiGet('/project/v1/hubs');
 }
 
-// Proyectos dentro de un hub
-async function listProjects(hubId) {
-  return await aps.apiGet(`/project/v1/hubs/${hubId}/projects`);
+// Proyectos (una página o todo)
+async function listProjects(hubId, { all = false, limit = 200 } = {}) {
+  const base = `/project/v1/hubs/${hubId}/projects?page[limit]=${limit}`;
+  if (!all) return await aps.apiGet(base);
+  const data = await fetchAllJsonApi(base);
+  return { jsonapi: { version: '1.0' }, data };
 }
 
-// Carpetas raíz de un proyecto
+// Top folders de un proyecto (normalmente 2: Project Files / Plans)
 async function listTopFolders(projectId) {
   return await aps.apiGet(`/data/v1/projects/${encodeURIComponent(projectId)}/topFolders`);
+}
+
+// Contenido de una carpeta (acepta paginación y ‘all=true’)
+async function listFolderContents(projectId, folderId, { all = false, limit = 200 } = {}) {
+  const base = `/data/v1/projects/${encodeURIComponent(projectId)}/folders/${encodeURIComponent(folderId)}/contents?page[limit]=${limit}`;
+  if (!all) return await aps.apiGet(base);
+  const data = await fetchAllJsonApi(base);
+  return { jsonapi: { version: '1.0' }, data };
 }
 
 // Parsear URN de almacenamiento OSS
@@ -131,6 +154,7 @@ module.exports = {
   listHubs,
   listProjects,
   listTopFolders,
+  listFolderContents,
   // nuevos helpers:
   createStorage,
   uploadFileToStorage,
