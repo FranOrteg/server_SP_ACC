@@ -33,8 +33,8 @@ async function listProjects(hubId, { all = false, limit = 200 } = {}) {
 }
 
 // Top folders de un proyecto (normalmente 2: Project Files / Plans)
-async function listTopFolders(projectId) {
-  return await aps.apiGet(`/data/v1/projects/${encodeURIComponent(projectId)}/topFolders`);
+async function listTopFolders(hubId, projectId) {
+  return await aps.apiGet(`/project/v1/hubs/${hubId}/projects/${projectId}/topFolders`);
 }
 
 // Contenido de una carpeta (acepta paginación y ‘all=true’)

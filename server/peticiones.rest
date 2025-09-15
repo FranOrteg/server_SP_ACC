@@ -1,9 +1,14 @@
-@host = http://localhost:3000
+@host=http://localhost:3000
 
 ## Rutas ##
-@urlHealth = /api/health
-@urlSP = /api/sp
-@DRIVE_ID = b!wCLoO5R470CbsFahzwmPA1nsRN_Yzj5Hl19_Us3vS4cjH0pJvN-0RYtKpZuFZ_W9
+@urlHealth=/api/health
+@urlSP=/api/sp
+@DRIVE_ID=b!wCLoO5R470CbsFahzwmPA1nsRN_Yzj5Hl19_Us3vS4cjH0pJvN-0RYtKpZuFZ_W9
+
+### TEMP VARIABLES ###
+@PROJECT_ID=b.76947f01-cc26-47db-9681-fff27e5430ce
+@FOLDER_ID=urn:adsk.wipprod:fs.folder:co.D7F4NTwdRqqYqMaK-M01Yw
+@HUB_ID=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
 
 ##############
 ### HEALTH ###
@@ -36,10 +41,19 @@ GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/teams/project
 ### ACC ###
 ###########
 
+### 1) Login (redirige a Autodesk para autorizar) http://localhost:3000/api/acc/auth/login?scopes=data:read&prompt=login
+
 GET http://localhost:3000/api/acc/hubs
 
 ### 
-GET http://localhost:3000/api/acc/projects?hubId=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
+### 2) TODOS los proyectos (paginando)
+GET http://localhost:3000/api/acc/projects?hubId={{HUB_ID}}
 
-###
-GET http://localhost:3000/api/acc/top-folders?projectId=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
+
+### Top folders del proyecto
+GET http://localhost:3000/api/acc/top-folders?hubId={{HUB_ID}}&projectId={{PROJECT_ID}}
+
+### Contenido de una carpeta (con paginación automática)
+GET http://localhost:3000/api/acc/list?projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&all=true&limit=200
+
+

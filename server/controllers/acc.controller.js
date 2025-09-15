@@ -49,9 +49,9 @@ async function projects(req, res, next) {
 
 async function topFolders(req, res, next) {
   try {
-    const { projectId } = req.query;
-    if (!projectId) return res.status(400).json({ error: 'projectId requerido' });
-    const data = await acc.listTopFolders(projectId);
+    const { hubId, projectId } = req.query;
+    if (!hubId || !projectId) return res.status(400).json({ error: 'hubId y projectId requeridos' });
+    const data = await acc.listTopFolders(hubId, projectId);
     res.json(data);
   } catch (e) { next(e); }
 }
