@@ -116,6 +116,10 @@ async function getItemByPath(driveId, folderPath = '') {
   return data; // { id, name, folder?, file?, ... }
 }
 
+async function getItemMeta(driveId, itemId) {
+  const { data } = await graphGet(`/drives/${driveId}/items/${itemId}?$select=id,name,size,webUrl`);
+  return data; // { id, name, size, webUrl, ... }
+}
 
 /* ------------------------------ listados SP ------------------------------ */
 
@@ -174,6 +178,7 @@ module.exports = {
   resolveSiteId,
   listDrivesBySitePath,
   getItemByPath,
+  getItemMeta,
 
   // NUEVO
   getRootSite,
