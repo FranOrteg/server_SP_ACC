@@ -32,7 +32,17 @@ async function ensureAccessToken() { await refreshIfNeeded(); return TOKENS?.acc
 
 function getAuthUrl(scopes, prompt) {
   const wanted = Array.isArray(scopes) && scopes.length ? scopes : defaultScopes();
-  const scopeStr = wanted.join(' ').replace(/ /g, '%20'); // espacios → %20, dejar ":" tal cual
+
+  // Sanitiza scopes: quita vacíos/duplicados y sólo deja los conocidos
+  const allowed = new Set([
+    'openid', 'offline_access',
+    'data:read', 'data:write', 'data:create',
+    'account:read', 'viewables:read'
+  ]);
+  const clean = [...new Set(wanted.filter(s => allowed.has(s)))];
+
+  // Codificamos espacios como %20 pero mantenemos los ":" intactos
+  const scopeStr = clean.join(' ').replace(/ /g, '%20');
 
   const base = `${APS_AUTH_BASE}/authorize`;
   const client = encodeURIComponent(APS_CLIENT_ID);
@@ -45,7 +55,6 @@ function getAuthUrl(scopes, prompt) {
   return `${base}?response_type=code&client_id=${client}&redirect_uri=${redirect}` +
          `&scope=${scopeStr}${promptPart}&state=${encodeURIComponent(state)}`;
 }
-
 
 async function exchangeCodeForTokens(code) {
   const body = qs.stringify({

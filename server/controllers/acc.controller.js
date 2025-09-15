@@ -2,26 +2,26 @@
 const aps = require('../clients/apsClient');
 const acc = require('../services/acc.service');
 
+
 function login(req, res) {
   const raw = (req.query.scopes || '').trim();
   const scopes = raw ? raw.split(/[,\s]+/).filter(Boolean) : undefined;
-  const url = aps.getAuthUrl(scopes, req.query.prompt);
+  const url = aps.getAuthUrl(scopes, req.query.prompt); // <-- pasa prompt
   res.redirect(url);
 }
 
 function loginUrl(req, res) {
   const raw = (req.query.scopes || '').trim();
   const scopes = raw ? raw.split(/[,\s]+/).filter(Boolean) : undefined;
-  const url = aps.getAuthUrl(scopes, req.query.prompt); 
+  const url = aps.getAuthUrl(scopes, req.query.prompt); // <-- pasa prompt
   res.json({ authorizeUrl: url });
 }
 
 async function callback(req, res, next) {
   try {
-    // ⚠️ si APS devuelve error, enséñalo en claro
-    if (req.query.error) {
+    if (req.query.error) {       // <-- ver el error real de APS
       console.error('APS OAuth ERROR:', req.query);
-      return res.status(400).json(req.query); 
+      return res.status(400).json(req.query);
     }
     const { code } = req.query;
     if (!code) return res.status(400).json({ error: 'code ausente' });
