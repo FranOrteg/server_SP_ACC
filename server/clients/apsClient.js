@@ -11,55 +11,54 @@ const {
 const APS_AUTH_BASE = 'https://developer.api.autodesk.com/authentication/v2';
 const APS_API_BASE  = 'https://developer.api.autodesk.com';
 
-// ⚠️ demo: tokens en memoria (una sola sesión). Luego lo cambiamos a store por usuario.
+// ⚠️ DEMO: tokens en memoria (una sesión). Para producción, persiste por usuario.
 let TOKENS = null;
 
-function isAbs(u) { return /^https?:\/\//i.test(u); }
-
-// clients/apsClient.js
 function defaultScopes() {
+  // Quitamos account:read para evitar invalid_scope si la app no está provisionada en ACC.
   return [
     'data:read',
     'data:write',
     'data:create',
-    'account:read',
     'viewables:read',
     'openid',
     'offline_access',
   ];
 }
 
-async function getAccessToken() {
-  const { access_token } = await refreshIfNeeded();
-  return access_token;
-}
+function isAbs(u) { return /^https?:\/\//i.test(u); }
 
 function getAuthUrl(scopes, prompt) {
   const wanted = Array.isArray(scopes) && scopes.length ? scopes : defaultScopes();
 
-  // Limpiar/validar scopes
   const allowed = new Set([
     'openid', 'offline_access',
     'data:read', 'data:write', 'data:create',
-    'account:read', 'viewables:read'
+    'account:read', // permitido si tu cuenta está provisionada; no lo metemos por defecto
+    'viewables:read'
   ]);
   const clean = [...new Set(wanted.filter(s => allowed.has(s)))];
 
-  // Espacios -> %20; mantener ":" sin codificar
-  const scopeStr = clean.join(' ').replace(/ /g, '%20');
-
+  const scopeStr = encodeURIComponent(clean.join(' '));
   const base = `${APS_AUTH_BASE}/authorize`;
   const client = encodeURIComponent(APS_CLIENT_ID);
   const redirect = encodeURIComponent(APS_CALLBACK_URL);
-  const state = Buffer.from(JSON.stringify({ ts: Date.now() })).toString('base64');
+  const state = encodeURIComponent(
+    Buffer.from(JSON.stringify({ ts: Date.now() })).toString('base64')
+  );
 
-  const allowedPrompts = new Set(['login', 'none', 'create']);
+  // prompt opcional: consent (re-consent), login, none
+  const allowedPrompts = new Set(['consent', 'login', 'none']);
   const promptPart = allowedPrompts.has(prompt) ? `&prompt=${prompt}` : '';
 
-  return `${base}?response_type=code&client_id=${client}&redirect_uri=${redirect}` +
-         `&scope=${scopeStr}${promptPart}&state=${encodeURIComponent(state)}`;
+  return `${base}?response_type=code&client_id=${client}` +
+         `&redirect_uri=${redirect}&scope=${scopeStr}${promptPart}&state=${state}`;
 }
 
+function stampExpiry(tokenResponse) {
+  const now = Math.floor(Date.now() / 1000);
+  return { ...tokenResponse, expires_at: now + (tokenResponse.expires_in || 0) };
+}
 
 async function exchangeCodeForTokens(code) {
   const body = qs.stringify({
@@ -94,10 +93,24 @@ async function refreshIfNeeded() {
   return TOKENS;
 }
 
-function stampExpiry(tokenResponse) {
-  // añade campo expires_at (epoch seconds)
-  const now = Math.floor(Date.now() / 1000);
-  return { ...tokenResponse, expires_at: now + (tokenResponse.expires_in || 0) };
+function getAccessToken() {
+  return TOKENS?.access_token || null;
+}
+
+async function ensureAccessToken() {
+  await refreshIfNeeded();
+  return TOKENS?.access_token || null;
+}
+
+function getTokenInfo() {
+  if (!TOKENS) return null;
+  // scope llega como string con espacios
+  const scopes = typeof TOKENS.scope === 'string' ? TOKENS.scope.split(' ') : [];
+  return {
+    scopes,
+    expires_at: TOKENS.expires_at,
+    token_type: TOKENS.token_type || 'Bearer'
+  };
 }
 
 async function apiGet(path, opts = {}) {
@@ -131,8 +144,11 @@ async function apiPut(path, bodyOrBuffer, opts = {}) {
 module.exports = {
   getAuthUrl,
   exchangeCodeForTokens,
+  refreshIfNeeded,
+  getAccessToken,
+  ensureAccessToken,
+  getTokenInfo,
   apiGet,
   apiPost,
-  apiPut,
-  getAccessToken
+  apiPut
 };

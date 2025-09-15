@@ -51,7 +51,7 @@ GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=SP%20XXYYNN%20sencillo%2
 ###########
 
 ### 0) Login con scopes de escritura (una sola vez por sesión)
-GET {{host}}{{urlACC}}/auth/login?scopes=data:read,data:write,data:create,viewables:read,account:read,offline_access,openid&prompt=login
+GET {{host}}{{urlACC}}/auth/login?scopes=data:read%20data:write%20data:create%20account:read%20viewables:read%20openid%20offline_access&prompt=login
 
 ### 1) Hubs
 GET {{host}}{{urlACC}}/hubs

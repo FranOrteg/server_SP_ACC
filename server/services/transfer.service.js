@@ -4,13 +4,10 @@ const acc = require('./acc.service');
 const fs = require('fs');
 
 async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, fileName }) {
-  const srcMeta = await sp.getItemMeta(driveId, itemId);
-  if (!srcMeta) throw new Error(`SP item ${itemId} no encontrado`);
-
-  // Si no me pasan nombre y es archivo, usamos el real; sino, itemId.bin
-  const name = fileName || srcMeta.name || (itemId + '.bin');
-
   const tmpPath = await sp.downloadItemToTmp(driveId, itemId);
+  const meta = await sp.getItemMeta(driveId, itemId);
+  const name = fileName || meta?.name || (itemId + '.bin');
+
   try {
     const storageUrn = await acc.createStorage(projectId, folderId, name);
     await acc.uploadFileToStorage(storageUrn, tmpPath);
@@ -21,8 +18,12 @@ async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, f
       return { action: 'version', itemId: existing.id, versionId: ver.data?.id, storage: storageUrn };
     } else {
       const created = await acc.createItem(projectId, folderId, name, storageUrn);
-      const v1 = (created.included || []).find(i => i.type === 'versions')?.id;
-      return { action: 'item', itemId: created.data?.id, versionId: v1, storage: storageUrn };
+      return {
+        action: 'item',
+        itemId: created.data?.id,
+        versionId: (created.included || []).find(i => i.type === 'versions')?.id,
+        storage: storageUrn
+      };
     }
   } finally {
     try { fs.unlinkSync(tmpPath); } catch {}
@@ -31,7 +32,7 @@ async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, f
 
 async function copySpTreeToAcc({
   driveId,
-  itemId,              // carpeta (o archivo) origen en SP
+  itemId,              // carpeta o archivo origen en SP
   projectId,           // id proyecto ACC (b.xxxx)
   targetFolderId,      // carpeta destino ACC (p.ej. "Project Files")
   mode = 'upsert',     // 'upsert' | 'skip' | 'replace'
@@ -69,7 +70,7 @@ async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryR
 
 async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, summary) {
   onLog(`📁 ensure folder: ${name} under ${parentFolderId}`);
-  if (dryRun) return parentFolderId; // en dry-run no creamos, pero seguimos el plan
+  if (dryRun) return parentFolderId;
   const exists = await acc.findChildByName(projectId, parentFolderId, name);
   if (exists && exists.type === 'folders') return exists.id;
   const id = await acc.ensureFolder(projectId, parentFolderId, name);
@@ -94,6 +95,7 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
   }
 
   const tmpPath = await sp.downloadItemToTmp(driveId, spItem.id);
+
   try {
     const storageUrn = await acc.createStorage(projectId, destFolderId, fileName);
     await acc.uploadFileToStorage(storageUrn, tmpPath);

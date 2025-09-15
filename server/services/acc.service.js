@@ -1,9 +1,11 @@
 // services/acc.service.js
 const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
+const mime = require('mime-types');
 const aps = require('../clients/apsClient');
 
-/* ------------------------------ listar hubs/proyectos ------------------------------ */
+/* ----------------------------- LISTADOS BÁSICOS ----------------------------- */
 
 async function listHubs() {
   return await aps.apiGet('/project/v1/hubs');
@@ -15,25 +17,18 @@ async function listProjects(hubId, { all = false, limit = 50 } = {}) {
 
   let url = `${base}?page[limit]=${limit}`;
   let out = [];
-  let firstPage;
   for (;;) {
     const page = await aps.apiGet(url);
-    if (!firstPage) firstPage = page;
     out = out.concat(page.data || []);
     const next = page.links && page.links.next && page.links.next.href;
-    if (!next) return { ...firstPage, data: out };
+    if (!next) return { ...page, data: out };
     url = next.replace('https://developer.api.autodesk.com', '');
   }
 }
 
-/* ------------------------------ top folders proyecto ------------------------------ */
-
-async function listTopFolders(hubId, projectId) {
-  const path = `/project/v1/hubs/${encodeURIComponent(hubId)}/projects/${encodeURIComponent(projectId)}/topFolders`;
-  return await aps.apiGet(path);
+async function listTopFolders(projectId) {
+  return await aps.apiGet(`/data/v1/projects/${encodeURIComponent(projectId)}/topFolders`);
 }
-
-/* ------------------------------ contenidos carpeta ------------------------------ */
 
 async function listFolderContents(projectId, folderId, { all = false, limit = 200 } = {}) {
   const base = `/data/v1/projects/${encodeURIComponent(projectId)}/folders/${encodeURIComponent(folderId)}/contents`;
@@ -42,33 +37,32 @@ async function listFolderContents(projectId, folderId, { all = false, limit = 20
   let url = `${base}?page[limit]=${limit}`;
   let included = [];
   let data = [];
-  let firstPage;
   for (;;) {
     const page = await aps.apiGet(url);
-    if (!firstPage) firstPage = page;
     data = data.concat(page.data || []);
     included = included.concat(page.included || []);
     const next = page.links && page.links.next && page.links.next.href;
-    if (!next) return { ...firstPage, data, included };
+    if (!next) return { ...page, data, included };
     url = next.replace('https://developer.api.autodesk.com', '');
   }
 }
 
-/* ------------------------------ carpetas: ensure / find ------------------------------ */
+/* ----------------------- FOLDERS (ENCONTRAR / CREAR) ----------------------- */
 
 async function findChildByName(projectId, parentFolderId, name) {
-  const existing = await listFolderContents(projectId, parentFolderId, { all: true, limit: 200 });
-  return (existing.data || []).find(e =>
-    (e.type === 'folders' || e.type === 'items') &&
-    ((e.attributes?.displayName || e.attributes?.name || '').toLowerCase() === name.toLowerCase())
-  ) || null;
+  const page = await listFolderContents(projectId, parentFolderId, { all: true, limit: 200 });
+  const node = (page.data || []).find(d =>
+    (d.type === 'folders' || d.type === 'items') &&
+    (d.attributes?.displayName || '').toLowerCase() === String(name).toLowerCase()
+  );
+  return node || null;
 }
 
 async function ensureFolder(projectId, parentFolderId, name) {
-  const found = await findChildByName(projectId, parentFolderId, name);
-  if (found && found.type === 'folders') return found.id;
+  const existing = await findChildByName(projectId, parentFolderId, name);
+  if (existing && existing.type === 'folders') return existing.id;
 
-  const payload = {
+  const body = {
     jsonapi: { version: '1.0' },
     data: {
       type: 'folders',
@@ -78,11 +72,17 @@ async function ensureFolder(projectId, parentFolderId, name) {
       }
     }
   };
-  const created = await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/folders`, payload);
+  const created = await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/folders`, body);
   return created?.data?.id;
 }
 
-/* ------------------------------ almacenamiento/objetos ------------------------------ */
+/* ------------------------- STORAGE & SUBIDA A OSS -------------------------- */
+
+function parseStorageUrn(urn) {
+  const m = /^urn:adsk\.objects:os\.object:([^/]+)\/(.+)$/.exec(urn || '');
+  if (!m) throw new Error(`Storage URN inválido: ${urn}`);
+  return { bucketKey: m[1], objectName: m[2] };
+}
 
 async function createStorage(projectId, folderId, fileName) {
   const body = {
@@ -90,43 +90,39 @@ async function createStorage(projectId, folderId, fileName) {
     data: {
       type: 'objects',
       attributes: { name: fileName },
-      relationships: {
-        target: { data: { type: 'folders', id: folderId } }
-      }
+      relationships: { target: { data: { type: 'folders', id: folderId } } }
     }
   };
   const res = await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/storage`, body);
-  // res.data.id => "urn:adsk.objects:os.object:wip.dm.prod/<guid>/<filename>"
-  return res?.data?.id;
-}
-
-function parseStorageUrn(storageUrn) {
-  const m = /^urn:adsk\.objects:os\.object:([^/]+)\/(.+)$/.exec(storageUrn);
-  if (!m) throw new Error(`Storage URN inválido: ${storageUrn}`);
-  return { bucketKey: m[1], objectName: m[2] };
+  return res?.data?.id; // "urn:adsk.objects:os.object:wip.dm.prod/<guid>/<filename>"
 }
 
 async function uploadFileToStorage(storageUrn, localFilePath) {
   const { bucketKey, objectName } = parseStorageUrn(storageUrn);
-  const accessToken = await aps.getAccessToken(); // requiere patch en apsClient.js (abajo)
+  const token = await aps.ensureAccessToken();
+  if (!token) throw new Error('No hay token de APS activo para subir a OSS');
 
-  const size = fs.statSync(localFilePath).size;
+  const stat = fs.statSync(localFilePath);
   const stream = fs.createReadStream(localFilePath);
+  const contentType = mime.lookup(localFilePath) || 'application/octet-stream';
 
-  const url = `https://developer.api.autodesk.com/oss/v2/buckets/${encodeURIComponent(bucketKey)}/objects/${encodeURIComponent(objectName)}`;
-  const { status } = await axios.put(url, stream, {
+  const encodedObject = objectName.split('/').map(encodeURIComponent).join('/');
+  const url = `https://developer.api.autodesk.com/oss/v2/buckets/${encodeURIComponent(bucketKey)}/objects/${encodedObject}`;
+
+  const { status, data } = await axios.put(url, stream, {
     headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': size
+      Authorization: `Bearer ${token}`,
+      'Content-Type': contentType,
+      'Content-Length': stat.size
     },
     maxBodyLength: Infinity,
-    maxContentLength: Infinity
+    maxContentLength: Infinity,
   });
   if (status < 200 || status >= 300) throw new Error(`Fallo subiendo a OSS (${status})`);
+  return data;
 }
 
-/* ------------------------------ items/versions ------------------------------ */
+/* --------------------------- ITEMS / VERSIONES ---------------------------- */
 
 async function findItemByName(projectId, folderId, fileName) {
   const page = await listFolderContents(projectId, folderId, { all: true, limit: 200 });
@@ -159,9 +155,7 @@ async function createItem(projectId, folderId, fileName, storageUrn) {
           name: fileName,
           extension: { type: 'versions:autodesk.bim360:File', version: '1.0' }
         },
-        relationships: {
-          storage: { data: { type: 'objects', id: storageUrn } }
-        }
+        relationships: { storage: { data: { type: 'objects', id: storageUrn } } }
       }
     ]
   };
@@ -191,8 +185,8 @@ module.exports = {
   listProjects,
   listTopFolders,
   listFolderContents,
-  ensureFolder,
   findChildByName,
+  ensureFolder,
   createStorage,
   uploadFileToStorage,
   findItemByName,
