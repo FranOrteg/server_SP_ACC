@@ -35,3 +35,6 @@ GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/teams/project
 ###########
 ### ACC ###
 ###########
+
+GET http://localhost:3000/api/acc/hubs
+

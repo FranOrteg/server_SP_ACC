@@ -27,22 +27,23 @@ function defaultScopes() {
   ];
 }
 
-function getAuthUrl(scopes) {
+function getAccessToken() { return TOKENS?.access_token || null; }
+async function ensureAccessToken() { await refreshIfNeeded(); return TOKENS?.access_token; }
+
+function getAuthUrl(scopes, prompt) {
   const wanted = Array.isArray(scopes) && scopes.length ? scopes : defaultScopes();
+  const scopeStr = wanted.join(' ').replace(/ /g, '%20'); // espacios → %20, dejar ":" tal cual
 
-  // Construimos el 'scope' manualmente:
-  // - dejamos los ':' tal cual
-  // - convertimos los espacios a %20
-  const scopeStr = wanted.join(' ').replace(/ /g, '%20');
-
-  // OJO: no usamos URLSearchParams para 'scope' para evitar %3A
   const base = `${APS_AUTH_BASE}/authorize`;
   const client = encodeURIComponent(APS_CLIENT_ID);
   const redirect = encodeURIComponent(APS_CALLBACK_URL);
+  const state = Buffer.from(JSON.stringify({ ts: Date.now() })).toString('base64');
 
-  // response_type/client_id/redirect_uri pueden ir codificados normal
-  // scope lo insertamos tal cual con los ':' sin codificar
-  return `${base}?response_type=code&client_id=${client}&redirect_uri=${redirect}&scope=${scopeStr}`;
+  const allowedPrompts = new Set(['login', 'none', 'create']);
+  const promptPart = allowedPrompts.has(prompt) ? `&prompt=${prompt}` : '';
+
+  return `${base}?response_type=code&client_id=${client}&redirect_uri=${redirect}` +
+         `&scope=${scopeStr}${promptPart}&state=${encodeURIComponent(state)}`;
 }
 
 
@@ -107,5 +108,7 @@ module.exports = {
   getAuthUrl,
   exchangeCodeForTokens,
   apiGet,
-  apiPost
+  apiPost,
+  getAccessToken,
+  ensureAccessToken
 };

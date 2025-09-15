@@ -5,25 +5,31 @@ const acc = require('../services/acc.service');
 function login(req, res) {
   const raw = (req.query.scopes || '').trim();
   const scopes = raw ? raw.split(/[,\s]+/).filter(Boolean) : undefined;
-  const url = aps.getAuthUrl(scopes);
+  const url = aps.getAuthUrl(scopes, req.query.prompt);
   res.redirect(url);
 }
 
 function loginUrl(req, res) {
   const raw = (req.query.scopes || '').trim();
   const scopes = raw ? raw.split(/[,\s]+/).filter(Boolean) : undefined;
-  const url = aps.getAuthUrl(scopes);
+  const url = aps.getAuthUrl(scopes, req.query.prompt); 
   res.json({ authorizeUrl: url });
 }
 
 async function callback(req, res, next) {
   try {
+    // ⚠️ si APS devuelve error, enséñalo en claro
+    if (req.query.error) {
+      console.error('APS OAuth ERROR:', req.query);
+      return res.status(400).json(req.query); 
+    }
     const { code } = req.query;
     if (!code) return res.status(400).json({ error: 'code ausente' });
     await aps.exchangeCodeForTokens(code);
     res.send('✅ Autodesk ACC conectado. Ya puedes probar /api/acc/hubs');
   } catch (e) { next(e); }
 }
+
 
 async function hubs(req, res, next) {
   try {

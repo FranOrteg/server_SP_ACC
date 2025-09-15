@@ -3,6 +3,9 @@ const aps = require('../clients/apsClient');
 const axios = require('axios');
 const fs = require('fs');
 const mime = require('mime-types');
+const { ensureAccessToken } = require('../clients/apsClient');
+
+// const token = await ensureAccessToken();
 
 // Hubs del usuario (ACC/BIM 360)
 async function listHubs() {
