@@ -10,6 +10,10 @@
 @FOLDER_ID=urn:adsk.wipprod:fs.folder:co.D7F4NTwdRqqYqMaK-M01Yw
 @HUB_ID=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
 
+@SP_DRIVE_ID=
+@SP_ITEM_ID=
+@NOMBRE_DESTINO_OPCIONAL=
+
 ##############
 ### HEALTH ###
 ##############
@@ -41,19 +45,23 @@ GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/teams/project
 ### ACC ###
 ###########
 
-### 1) Login (redirige a Autodesk para autorizar) http://localhost:3000/api/acc/auth/login?scopes=data:read&prompt=login
+### 0) Login con scopes de escritura (una sola vez por sesión)
+GET http://localhost:3000/api/acc/auth/login?scopes=data:read,data:write,data:create,viewables:read,account:read,offline_access,openid&prompt=login
 
+### 1) Hubs
 GET http://localhost:3000/api/acc/hubs
 
-### 
-### 2) TODOS los proyectos (paginando)
-GET http://localhost:3000/api/acc/projects?hubId={{HUB_ID}}
+### 2) Proyectos (elige uno y copia su "id")
+GET http://localhost:3000/api/acc/projects?hubId={{HUB_ID}}&all=true&limit=200
 
+### 3) Top folders del proyecto (coge el folderId de "Project Files" o el que prefieras)
+GET http://localhost:3000/api/acc/top-folders?projectId={{PROJECT_ID}}
 
-### Top folders del proyecto
-GET http://localhost:3000/api/acc/top-folders?hubId={{HUB_ID}}&projectId={{PROJECT_ID}}
-
-### Contenido de una carpeta (con paginación automática)
+### 4) (opcional) Lista contenidos de una carpeta destino
 GET http://localhost:3000/api/acc/list?projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&all=true&limit=200
 
+### 5) SharePoint: elige driveId + itemId de tu archivo origen
+# (ya los tienes listando /api/sp/list?driveId=... )
 
+### 6) Copia SP → ACC
+GET http://localhost:3000/api/bridge/sp-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&fileName={{NOMBRE_DESTINO_OPCIONAL}}

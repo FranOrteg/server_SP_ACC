@@ -1,27 +1,46 @@
+// services/transfer.service.js
 const sp = require('./sharepoint.service');
 const acc = require('./acc.service');
+const fs = require('fs');
 
-async function copySpItemToAcc({ driveId, itemId, projectId, folderId }) {
-  // 1) SP: metadatos y descarga temporal
-  const meta = await sp.getItemMeta(driveId, itemId); // { name, size, ... }
-  const tmpFile = await sp.downloadItemToTmp(driveId, itemId);
+async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, fileName }) {
+  // 1) Descarga a /tmp
+  const tmpPath = await sp.downloadItemToTmp(driveId, itemId);
 
-  // 2) ACC: crear storage y subir objeto a OSS
-  const storage = await acc.createStorage(projectId, folderId, meta.name);
-  const storageUrn = storage?.data?.id;
-  if (!storageUrn) throw new Error('No se pudo crear storage en ACC');
+  // 2) Si no me pasan nombre, lo inferimos del webUrl o del propio itemId
+  const name = fileName || (itemId + '.bin');
 
-  await acc.uploadFileToStorage(storageUrn, tmpFile);
+  try {
+    // 3) Storage + OSS
+    const storageUrn = await acc.createStorage(projectId, folderId, name);
+    await acc.uploadFileToStorage(storageUrn, tmpPath);
 
-  // 3) ACC: crear item o nueva versión
-  const existing = await acc.findItemByName(projectId, folderId, meta.name);
-  if (!existing) {
-    const created = await acc.createItem(projectId, folderId, storageUrn, meta.name);
-    return { action: 'created:item', item: created?.data, meta };
-  } else {
-    const version = await acc.createVersion(projectId, existing.id, storageUrn, meta.name);
-    return { action: 'created:version', version: version?.data, meta };
+    // 4) ¿Existe ya el item?
+    const existing = await acc.findItemByName(projectId, folderId, name);
+
+    if (existing) {
+      // 4b) Nueva versión
+      const ver = await acc.createVersion(projectId, existing.id, name, storageUrn);
+      return {
+        action: 'version',
+        itemId: existing.id,
+        versionId: ver.data?.id,
+        storage: storageUrn
+      };
+    } else {
+      // 4a) Crear item (v1)
+      const created = await acc.createItem(projectId, folderId, name, storageUrn);
+      return {
+        action: 'item',
+        itemId: created.data?.id,
+        versionId: (created.included || []).find(i => i.type === 'versions')?.id,
+        storage: storageUrn
+      };
+    }
+  } finally {
+    // 5) Limpieza
+    try { fs.unlinkSync(tmpPath); } catch {}
   }
 }
 
-module.exports = { copySpItemToAcc };
+module.exports = { copySharePointItemToAcc };

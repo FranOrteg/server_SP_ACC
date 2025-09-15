@@ -29,6 +29,11 @@ function defaultScopes() {
   ];
 }
 
+async function getAccessToken() {
+  const { access_token } = await refreshIfNeeded();
+  return access_token;
+}
+
 function getAuthUrl(scopes, prompt) {
   const wanted = Array.isArray(scopes) && scopes.length ? scopes : defaultScopes();
 
@@ -129,4 +134,5 @@ module.exports = {
   apiGet,
   apiPost,
   apiPut,
+  getAccessToken
 };
