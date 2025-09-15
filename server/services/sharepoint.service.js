@@ -3,13 +3,12 @@ const { graphGet, graphGetStream, graphPost } = require('../clients/graphClient'
 const { pipeline } = require('node:stream/promises');
 const fs = require('fs');
 const path = require('path');
-const { get } = require('express/lib/response');
 
 /* ----------------------------- helpers sitio ----------------------------- */
 
 async function getRootSite() {
   const { data } = await graphGet('/sites/root?$select=id,webUrl,displayName');
-  return data; 
+  return data;
 }
 
 async function findSites(q, preferHostname) {
@@ -29,7 +28,7 @@ async function listDrivesByUrl(siteUrl) {
   const site = await resolveSiteIdFlexible({ url: siteUrl });
   const { data } = await graphGet(`/sites/${site.id}/drives`);
   return { site, drives: data.value || [] };
-};
+}
 
 function ensureLeadingSlash(p) {
   if (!p) return '/';
@@ -47,18 +46,15 @@ function parseSiteUrl(siteUrl) {
 
 async function resolveSiteIdByPath(hostname, serverRelativePath) {
   const spath = ensureLeadingSlash(serverRelativePath); // -> '/sites/Proyectos'
-  const url = `/sites/${hostname}:` + encodeURI(spath); // mantiene las '/'
-  // Traemos algunos campos útiles por si quieres mostrarlos en UI
+  const url = `/sites/${hostname}:` + encodeURI(spath); // conserva '/'
   const { data } = await graphGet(`${url}?$select=id,webUrl,displayName`);
   return data; // { id, webUrl, displayName }
 }
 
 async function searchSite(hostnameOrNull, serverRelativePathOrName) {
-  const needle = (serverRelativePathOrName || '').split('/').filter(Boolean).pop(); // 'Proyectos'
+  const needle = (serverRelativePathOrName || '').split('/').filter(Boolean).pop();
   const { data } = await graphGet(`/sites?search=${encodeURIComponent(needle)}&$select=id,webUrl,displayName`);
   let candidates = data.value || [];
-
-  // Si tenemos hostname y parece válido, filtramos; si no, buscamos en todo el tenant
   if (hostnameOrNull) {
     candidates = candidates.filter(s => {
       try { return new URL(s.webUrl).hostname.includes(hostnameOrNull); }
@@ -93,9 +89,7 @@ async function resolveSiteIdFlexible({ url, hostname, path }) {
     const msgRaw = e?.response?.data?.error?.message || e.message || '';
     const invalidHost = /invalid hostname/i.test(msgRaw);
 
-    // 1º: búsqueda con hostname (si lo teníamos)
     let found = await searchSite(host, spath);
-    // 2º: si Graph dice "invalid hostname", intentamos sin filtrar por hostname
     if (!found && (status === 400 || status === 404 || invalidHost)) {
       found = await searchSite(null, spath);
     }
@@ -108,22 +102,8 @@ async function resolveSiteIdFlexible({ url, hostname, path }) {
   }
 }
 
-// Trae el item (carpeta/archivo) por path (sin /children)
-async function getItemByPath(driveId, folderPath = '') {
-  const seg = normalizeFolderPath(folderPath);
-  const suffix = seg ? `/root:/${encodeURI(seg)}` : `/root`;
-  const { data } = await graphGet(`/drives/${driveId}${suffix}`);
-  return data; // { id, name, folder?, file?, ... }
-}
-
-async function getItemMeta(driveId, itemId) {
-  const { data } = await graphGet(`/drives/${driveId}/items/${itemId}?$select=id,name,size,webUrl`);
-  return data; // { id, name, size, webUrl, ... }
-}
-
 /* ------------------------------ listados SP ------------------------------ */
 
-// Para compatibilidad con tu controlador actual (hostname+path)
 async function resolveSiteId(hostname, sitePath) {
   const site = await resolveSiteIdFlexible({ hostname, path: sitePath });
   return site.id;
@@ -135,7 +115,6 @@ async function listDrivesBySitePath(hostname, sitePath) {
   return data.value || [];
 }
 
-// Lista drives (bibliotecas) de un sitio
 async function listSiteDrives(siteId) {
   const { data } = await graphGet(`/sites/${siteId}/drives`);
   return data.value || [];
@@ -143,10 +122,9 @@ async function listSiteDrives(siteId) {
 
 function normalizeFolderPath(p) {
   if (!p) return '';
-  return p.replace(/^\/+/, '').replace(/\/+$/, ''); // sin / inicial ni final
+  return p.replace(/^\/+/, '').replace(/\/+$/, '');
 }
 
-// Lista items de una carpeta por path dentro del drive
 async function listFolderByPath(driveId, folderPath = '') {
   const seg = normalizeFolderPath(folderPath);
   const suffix = seg ? `/root:/${encodeURI(seg)}:/children` : `/root/children`;
@@ -154,6 +132,32 @@ async function listFolderByPath(driveId, folderPath = '') {
   return data.value || [];
 }
 
+async function listChildrenByItem(driveId, itemId) {
+  const base = `/drives/${driveId}/items/${itemId}/children`;
+  const select = '$select=id,name,folder,file,size,parentReference,lastModifiedDateTime,webUrl';
+  let url = `${base}?${select}`;
+  const all = [];
+  for (;;) {
+    const { data } = await graphGet(url);
+    if (Array.isArray(data.value)) all.push(...data.value);
+    const next = data['@odata.nextLink'];
+    if (!next) break;
+    url = next.replace('https://graph.microsoft.com/v1.0', '');
+  }
+  return all;
+}
+
+async function getItemByPath(driveId, folderPath = '') {
+  const seg = normalizeFolderPath(folderPath);
+  const suffix = seg ? `/root:/${encodeURI(seg)}` : `/root`;
+  const { data } = await graphGet(`/drives/${driveId}${suffix}`);
+  return data;
+}
+
+async function getItemMeta(driveId, itemId) {
+  const { data } = await graphGet(`/drives/${driveId}/items/${itemId}?$select=id,name,size,webUrl,folder,file,parentReference,lastModifiedDateTime`);
+  return data;
+}
 
 /* --------------------------- descarga / upload SP -------------------------- */
 
@@ -180,7 +184,7 @@ module.exports = {
   getItemByPath,
   getItemMeta,
 
-  // NUEVO
+  // descubrimiento
   getRootSite,
   findSites,
   listDrivesByUrl,
@@ -188,6 +192,7 @@ module.exports = {
   // listados
   listSiteDrives,
   listFolderByPath,
+  listChildrenByItem,
 
   // IO
   downloadItemToTmp,

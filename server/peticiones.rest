@@ -3,6 +3,8 @@
 ## Rutas ##
 @urlHealth=/api/health
 @urlSP=/api/sp
+@urlBridge=/api/bridge
+@urlACC=/api/acc
 @DRIVE_ID=b!wCLoO5R470CbsFahzwmPA1nsRN_Yzj5Hl19_Us3vS4cjH0pJvN-0RYtKpZuFZ_W9
 
 ### TEMP VARIABLES ###
@@ -10,9 +12,9 @@
 @FOLDER_ID=urn:adsk.wipprod:fs.folder:co.D7F4NTwdRqqYqMaK-M01Yw
 @HUB_ID=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
 
-@SP_DRIVE_ID=
-@SP_ITEM_ID=
-@NOMBRE_DESTINO_OPCIONAL=
+@SP_DRIVE_ID=b!wCLoO5R470CbsFahzwmPA1nsRN_Yzj5Hl19_Us3vS4cjH0pJvN-0RYtKpZuFZ_W9
+@SP_ITEM_ID=01GXVT7VN6Y2GOVW7725BZO354PWSELRRZ
+@NOMBRE_DESTINO_OPCIONAL=test
 
 ##############
 ### HEALTH ###
@@ -40,28 +42,44 @@ GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/projec
 ### 4) (Opcional) Si quieres el siteId explícito
 GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/teams/projects
 
+###
+GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=SP%20XXYYNN%20sencillo%2020240108
+
 
 ###########
 ### ACC ###
 ###########
 
 ### 0) Login con scopes de escritura (una sola vez por sesión)
-GET http://localhost:3000/api/acc/auth/login?scopes=data:read,data:write,data:create,viewables:read,account:read,offline_access,openid&prompt=login
+GET {{host}}{{urlACC}}/auth/login?scopes=data:read,data:write,data:create,viewables:read,account:read,offline_access,openid&prompt=login
 
 ### 1) Hubs
-GET http://localhost:3000/api/acc/hubs
+GET {{host}}{{urlACC}}/hubs
 
 ### 2) Proyectos (elige uno y copia su "id")
-GET http://localhost:3000/api/acc/projects?hubId={{HUB_ID}}&all=true&limit=200
+GET {{host}}{{urlACC}}/projects?hubId={{HUB_ID}}&all=true&limit=200
 
 ### 3) Top folders del proyecto (coge el folderId de "Project Files" o el que prefieras)
-GET http://localhost:3000/api/acc/top-folders?projectId={{PROJECT_ID}}
+GET {{host}}{{urlACC}}/top-folders?hubId={{HUB_ID}}&projectId={{PROJECT_ID}}
 
 ### 4) (opcional) Lista contenidos de una carpeta destino
-GET http://localhost:3000/api/acc/list?projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&all=true&limit=200
+GET {{host}}{{urlACC}}/list?projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&all=true&limit=200
 
 ### 5) SharePoint: elige driveId + itemId de tu archivo origen
 # (ya los tienes listando /api/sp/list?driveId=... )
 
 ### 6) Copia SP → ACC
-GET http://localhost:3000/api/bridge/sp-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&fileName={{NOMBRE_DESTINO_OPCIONAL}}
+GET {{host}}{{urlBridge}}/sp-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&fileName={{NOMBRE_DESTINO_OPCIONAL}}
+
+
+
+
+### WEB LOGIN (si quieres probar desde navegador) ###
+### http://localhost:3000/api/acc/auth/login?scopes=data:read&prompt=login ###
+
+
+### 7) Copia RECURSIVA SP → ACC (dry-run primero)
+POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&mode=upsert&dryRun=true
+
+### 8) Ejecutar de verdad
+POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&mode=upsert&dryRun=false

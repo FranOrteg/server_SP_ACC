@@ -4,43 +4,113 @@ const acc = require('./acc.service');
 const fs = require('fs');
 
 async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, fileName }) {
-  // 1) Descarga a /tmp
+  const srcMeta = await sp.getItemMeta(driveId, itemId);
+  if (!srcMeta) throw new Error(`SP item ${itemId} no encontrado`);
+
+  // Si no me pasan nombre y es archivo, usamos el real; sino, itemId.bin
+  const name = fileName || srcMeta.name || (itemId + '.bin');
+
   const tmpPath = await sp.downloadItemToTmp(driveId, itemId);
-
-  // 2) Si no me pasan nombre, lo inferimos del webUrl o del propio itemId
-  const name = fileName || (itemId + '.bin');
-
   try {
-    // 3) Storage + OSS
     const storageUrn = await acc.createStorage(projectId, folderId, name);
     await acc.uploadFileToStorage(storageUrn, tmpPath);
 
-    // 4) ¿Existe ya el item?
     const existing = await acc.findItemByName(projectId, folderId, name);
-
     if (existing) {
-      // 4b) Nueva versión
       const ver = await acc.createVersion(projectId, existing.id, name, storageUrn);
-      return {
-        action: 'version',
-        itemId: existing.id,
-        versionId: ver.data?.id,
-        storage: storageUrn
-      };
+      return { action: 'version', itemId: existing.id, versionId: ver.data?.id, storage: storageUrn };
     } else {
-      // 4a) Crear item (v1)
       const created = await acc.createItem(projectId, folderId, name, storageUrn);
-      return {
-        action: 'item',
-        itemId: created.data?.id,
-        versionId: (created.included || []).find(i => i.type === 'versions')?.id,
-        storage: storageUrn
-      };
+      const v1 = (created.included || []).find(i => i.type === 'versions')?.id;
+      return { action: 'item', itemId: created.data?.id, versionId: v1, storage: storageUrn };
     }
   } finally {
-    // 5) Limpieza
     try { fs.unlinkSync(tmpPath); } catch {}
   }
 }
 
-module.exports = { copySharePointItemToAcc };
+async function copySpTreeToAcc({
+  driveId,
+  itemId,              // carpeta (o archivo) origen en SP
+  projectId,           // id proyecto ACC (b.xxxx)
+  targetFolderId,      // carpeta destino ACC (p.ej. "Project Files")
+  mode = 'upsert',     // 'upsert' | 'skip' | 'replace'
+  dryRun = false,
+  onLog = () => {}
+}) {
+  const started = Date.now();
+  const summary = { foldersCreated: 0, filesUploaded: 0, versionsCreated: 0, skipped: 0, bytesUploaded: 0 };
+
+  const root = await sp.getItemMeta(driveId, itemId);
+  if (!root) throw new Error(`SP item ${itemId} no encontrado`);
+
+  let destFolderId = targetFolderId;
+  if (root.folder) {
+    destFolderId = await ensureAccFolder(projectId, targetFolderId, root.name, dryRun, onLog, summary);
+    await walkFolder(driveId, root, projectId, destFolderId, mode, dryRun, onLog, summary);
+  } else {
+    await copyOneFile(driveId, root, projectId, targetFolderId, mode, dryRun, onLog, summary);
+  }
+
+  return { ok: true, summary, tookMs: Date.now() - started };
+}
+
+async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryRun, onLog, summary) {
+  const children = await sp.listChildrenByItem(driveId, spFolder.id);
+  for (const child of children) {
+    if (child.folder) {
+      const subId = await ensureAccFolder(projectId, destFolderId, child.name, dryRun, onLog, summary);
+      await walkFolder(driveId, child, projectId, subId, mode, dryRun, onLog, summary);
+    } else {
+      await copyOneFile(driveId, child, projectId, destFolderId, mode, dryRun, onLog, summary);
+    }
+  }
+}
+
+async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, summary) {
+  onLog(`📁 ensure folder: ${name} under ${parentFolderId}`);
+  if (dryRun) return parentFolderId; // en dry-run no creamos, pero seguimos el plan
+  const exists = await acc.findChildByName(projectId, parentFolderId, name);
+  if (exists && exists.type === 'folders') return exists.id;
+  const id = await acc.ensureFolder(projectId, parentFolderId, name);
+  summary.foldersCreated++;
+  return id;
+}
+
+async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRun, onLog, summary) {
+  const fileName = spItem.name;
+  const size = spItem.size || 0;
+  const existing = await acc.findItemByName(projectId, destFolderId, fileName);
+
+  if (existing && mode === 'skip') {
+    onLog(`⏭️  skip (existe): ${fileName}`);
+    summary.skipped++;
+    return;
+  }
+
+  if (dryRun) {
+    onLog(`🧪 would upload ${fileName} (${size} bytes) → ${destFolderId} (${existing ? 'new version' : 'new item'})`);
+    return;
+  }
+
+  const tmpPath = await sp.downloadItemToTmp(driveId, spItem.id);
+  try {
+    const storageUrn = await acc.createStorage(projectId, destFolderId, fileName);
+    await acc.uploadFileToStorage(storageUrn, tmpPath);
+
+    if (!existing) {
+      await acc.createItem(projectId, destFolderId, fileName, storageUrn);
+      summary.filesUploaded++;
+    } else {
+      await acc.createVersion(projectId, existing.id, fileName, storageUrn);
+      summary.versionsCreated++;
+    }
+
+    summary.bytesUploaded += size;
+    onLog(`✅ ${existing ? 'version' : 'file'} OK: ${fileName}`);
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch {}
+  }
+}
+
+module.exports = { copySharePointItemToAcc, copySpTreeToAcc };
