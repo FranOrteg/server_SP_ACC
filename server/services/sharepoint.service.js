@@ -155,8 +155,13 @@ async function getItemByPath(driveId, folderPath = '') {
 }
 
 async function getItemMeta(driveId, itemId) {
-  const { data } = await graphGet(`/drives/${driveId}/items/${itemId}?$select=id,name,size,webUrl,folder,file,parentReference,lastModifiedDateTime`);
-  return data;
+  const { data } = await graphGet(`/drives/${driveId}/items/${itemId}`);
+  return data; // { id, name, size, folder?, file?, root?, ... }
+}
+
+// identifica si es el root del drive
+function isDriveRoot(item) {
+  return Boolean(item?.root) || (String(item?.name).toLowerCase() === 'root');
 }
 
 /* --------------------------- descarga / upload SP -------------------------- */
@@ -193,6 +198,7 @@ module.exports = {
   listSiteDrives,
   listFolderByPath,
   listChildrenByItem,
+  isDriveRoot,
 
   // IO
   downloadItemToTmp,

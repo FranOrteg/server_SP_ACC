@@ -5,14 +5,16 @@ const fs = require('fs');
 
 async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, fileName }) {
   const tmpPath = await sp.downloadItemToTmp(driveId, itemId);
+
   const meta = await sp.getItemMeta(driveId, itemId);
-  const name = fileName || meta?.name || (itemId + '.bin');
+  const name = fileName || meta.name || (itemId + '.bin');
 
   try {
     const storageUrn = await acc.createStorage(projectId, folderId, name);
     await acc.uploadFileToStorage(storageUrn, tmpPath);
 
     const existing = await acc.findItemByName(projectId, folderId, name);
+
     if (existing) {
       const ver = await acc.createVersion(projectId, existing.id, name, storageUrn);
       return { action: 'version', itemId: existing.id, versionId: ver.data?.id, storage: storageUrn };
@@ -32,10 +34,10 @@ async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, f
 
 async function copySpTreeToAcc({
   driveId,
-  itemId,              // carpeta o archivo origen en SP
-  projectId,           // id proyecto ACC (b.xxxx)
-  targetFolderId,      // carpeta destino ACC (p.ej. "Project Files")
-  mode = 'upsert',     // 'upsert' | 'skip' | 'replace'
+  itemId,
+  projectId,
+  targetFolderId,
+  mode = 'upsert',
   dryRun = false,
   onLog = () => {}
 }) {
@@ -47,7 +49,8 @@ async function copySpTreeToAcc({
 
   let destFolderId = targetFolderId;
   if (root.folder) {
-    destFolderId = await ensureAccFolder(projectId, targetFolderId, root.name, dryRun, onLog, summary);
+    const rootName = root.name || 'root';
+    destFolderId = await ensureAccFolder(projectId, targetFolderId, rootName, dryRun, onLog, summary);
     await walkFolder(driveId, root, projectId, destFolderId, mode, dryRun, onLog, summary);
   } else {
     await copyOneFile(driveId, root, projectId, targetFolderId, mode, dryRun, onLog, summary);

@@ -2,152 +2,128 @@
 const axios = require('axios');
 const qs = require('querystring');
 
-const {
-  APS_CLIENT_ID,
-  APS_CLIENT_SECRET,
-  APS_CALLBACK_URL
-} = process.env;
+const APS_BASE = 'https://developer.api.autodesk.com';
+const AUTH_BASE = `${APS_BASE}/authentication/v2`;
 
-const APS_AUTH_BASE = 'https://developer.api.autodesk.com/authentication/v2';
-const APS_API_BASE  = 'https://developer.api.autodesk.com';
+let tokenState = {
+  access_token: null,
+  refresh_token: null,
+  expires_at: 0,
+  scope: []
+};
 
-// ⚠️ DEMO: tokens en memoria (una sesión). Para producción, persiste por usuario.
-let TOKENS = null;
+/**
+ * Devuelve la URL de autorización 3LO.
+ * @param {string[]} scopes p.ej ['data:read','data:write','data:create','offline_access']
+ * @param {string} prompt 'login' | 'none' | 'create'
+ */
+function buildAuthUrl(scopes = [], prompt = 'login') {
+  const { APS_CLIENT_ID, APS_CALLBACK_URL } = process.env;
+  if (!APS_CLIENT_ID || !APS_CALLBACK_URL)
+    throw new Error('Faltan APS_CLIENT_ID o APS_CALLBACK_URL en .env');
 
-function defaultScopes() {
-  // Quitamos account:read para evitar invalid_scope si la app no está provisionada en ACC.
-  return [
-    'data:read',
-    'data:write',
-    'data:create',
-    'viewables:read',
-    'openid',
-    'offline_access',
-  ];
+  const params = {
+    response_type: 'code',
+    client_id: APS_CLIENT_ID,
+    redirect_uri: APS_CALLBACK_URL,
+    scope: scopes.join(' '),
+    prompt
+  };
+  return `${AUTH_BASE}/authorize?${qs.stringify(params)}`;
 }
 
-function isAbs(u) { return /^https?:\/\//i.test(u); }
-
-function getAuthUrl(scopes, prompt) {
-  const wanted = Array.isArray(scopes) && scopes.length ? scopes : defaultScopes();
-
-  const allowed = new Set([
-    'openid', 'offline_access',
-    'data:read', 'data:write', 'data:create',
-    'account:read', // permitido si tu cuenta está provisionada; no lo metemos por defecto
-    'viewables:read'
-  ]);
-  const clean = [...new Set(wanted.filter(s => allowed.has(s)))];
-
-  const scopeStr = encodeURIComponent(clean.join(' '));
-  const base = `${APS_AUTH_BASE}/authorize`;
-  const client = encodeURIComponent(APS_CLIENT_ID);
-  const redirect = encodeURIComponent(APS_CALLBACK_URL);
-  const state = encodeURIComponent(
-    Buffer.from(JSON.stringify({ ts: Date.now() })).toString('base64')
-  );
-
-  // prompt opcional: consent (re-consent), login, none
-  const allowedPrompts = new Set(['consent', 'login', 'none']);
-  const promptPart = allowedPrompts.has(prompt) ? `&prompt=${prompt}` : '';
-
-  return `${base}?response_type=code&client_id=${client}` +
-         `&redirect_uri=${redirect}&scope=${scopeStr}${promptPart}&state=${state}`;
-}
-
-function stampExpiry(tokenResponse) {
-  const now = Math.floor(Date.now() / 1000);
-  return { ...tokenResponse, expires_at: now + (tokenResponse.expires_in || 0) };
-}
-
-async function exchangeCodeForTokens(code) {
-  const body = qs.stringify({
+async function exchangeCodeForToken(code) {
+  const { APS_CLIENT_ID, APS_CLIENT_SECRET, APS_CALLBACK_URL } = process.env;
+  const url = `${AUTH_BASE}/token`;
+  const data = {
     grant_type: 'authorization_code',
     code,
     client_id: APS_CLIENT_ID,
     client_secret: APS_CLIENT_SECRET,
     redirect_uri: APS_CALLBACK_URL
-  });
-  const { data } = await axios.post(`${APS_AUTH_BASE}/token`, body, {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  });
-  TOKENS = stampExpiry(data);
-  return TOKENS;
-}
-
-async function refreshIfNeeded() {
-  if (!TOKENS) throw new Error('Not authenticated with APS');
-  const now = Math.floor(Date.now() / 1000);
-  if (TOKENS.expires_at && TOKENS.expires_at - now > 60) return TOKENS;
-
-  const body = qs.stringify({
-    grant_type: 'refresh_token',
-    refresh_token: TOKENS.refresh_token,
-    client_id: APS_CLIENT_ID,
-    client_secret: APS_CLIENT_SECRET,
-  });
-  const { data } = await axios.post(`${APS_AUTH_BASE}/token`, body, {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  });
-  TOKENS = stampExpiry({ ...TOKENS, ...data });
-  return TOKENS;
-}
-
-function getAccessToken() {
-  return TOKENS?.access_token || null;
-}
-
-async function ensureAccessToken() {
-  await refreshIfNeeded();
-  return TOKENS?.access_token || null;
-}
-
-function getTokenInfo() {
-  if (!TOKENS) return null;
-  // scope llega como string con espacios
-  const scopes = typeof TOKENS.scope === 'string' ? TOKENS.scope.split(' ') : [];
-  return {
-    scopes,
-    expires_at: TOKENS.expires_at,
-    token_type: TOKENS.token_type || 'Bearer'
   };
+  const { data: tok } = await axios.post(url, qs.stringify(data), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+  });
+  setToken(tok);
+  return tok;
 }
 
-async function apiGet(path, opts = {}) {
-  const { access_token } = await refreshIfNeeded();
-  const url = isAbs(path) ? path : `${APS_API_BASE}${path}`;
-  const { data } = await axios.get(url, {
-    ...opts,
-    headers: { Authorization: `Bearer ${access_token}`, ...(opts.headers || {}) }
+async function refreshTokenIfNeeded() {
+  const now = Date.now();
+  if (tokenState.access_token && now < tokenState.expires_at - 30_000) {
+    return tokenState.access_token;
+  }
+  if (!tokenState.refresh_token) {
+    throw new Error('No hay refresh_token. Inicia sesión con /api/acc/auth/login.');
+  }
+  const { APS_CLIENT_ID, APS_CLIENT_SECRET } = process.env;
+  const url = `${AUTH_BASE}/token`;
+  const data = {
+    grant_type: 'refresh_token',
+    refresh_token: tokenState.refresh_token,
+    client_id: APS_CLIENT_ID,
+    client_secret: APS_CLIENT_SECRET
+  };
+  const { data: tok } = await axios.post(url, qs.stringify(data), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
   });
+  setToken(tok);
+  return tokenState.access_token;
+}
+
+function setToken(tok) {
+  tokenState.access_token = tok.access_token;
+  tokenState.refresh_token = tok.refresh_token || tokenState.refresh_token;
+  tokenState.scope = typeof tok.scope === 'string' ? tok.scope.split(' ') : (tok.scope || []);
+  tokenState.expires_at = Date.now() + (tok.expires_in || 0) * 1000; // seconds -> ms
+}
+
+function clearToken() {
+  tokenState = { access_token: null, refresh_token: null, expires_at: 0, scope: [] };
+}
+
+async function getAccessToken() {
+  return await refreshTokenIfNeeded();
+}
+
+// ---- API helpers 3LO ----
+async function apiGet(url, config = {}) {
+  const access = await getAccessToken();
+  const { data, status } = await axios.get(url.startsWith('http') ? url : `${APS_BASE}${url}`, {
+    ...config,
+    headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+  });
+  if (status < 200 || status >= 300) throw new Error(`GET ${url} => ${status}`);
   return data;
 }
 
-async function apiPost(path, body, opts = {}) {
-  const { access_token } = await refreshIfNeeded();
-  const url = isAbs(path) ? path : `${APS_API_BASE}${path}`;
-  const { data } = await axios.post(url, body, {
-    ...opts,
-    headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json', ...(opts.headers || {}) }
+async function apiPost(url, body, config = {}) {
+  const access = await getAccessToken();
+  const { data, status } = await axios.post(url.startsWith('http') ? url : `${APS_BASE}${url}`, body, {
+    ...config,
+    headers: { 'Content-Type': 'application/json', ...(config.headers || {}), Authorization: `Bearer ${access}` }
   });
+  if (status < 200 || status >= 300) throw new Error(`POST ${url} => ${status}`);
   return data;
 }
 
-async function apiPut(path, bodyOrBuffer, opts = {}) {
-  const { access_token } = await refreshIfNeeded();
-  const url = isAbs(path) ? path : `${APS_API_BASE}${path}`;
-  const headers = { Authorization: `Bearer ${access_token}`, ...(opts.headers || {}) };
-  const { data } = await axios.put(url, bodyOrBuffer, { ...opts, headers });
+async function apiPut(url, body, config = {}) {
+  const access = await getAccessToken();
+  const { data, status } = await axios.put(url.startsWith('http') ? url : `${APS_BASE}${url}`, body, {
+    ...config,
+    headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+  });
+  if (status < 200 || status >= 300) throw new Error(`PUT ${url} => ${status}`);
   return data;
 }
 
 module.exports = {
-  getAuthUrl,
-  exchangeCodeForTokens,
-  refreshIfNeeded,
+  buildAuthUrl,
+  exchangeCodeForToken,
+  setToken,
+  clearToken,
   getAccessToken,
-  ensureAccessToken,
-  getTokenInfo,
   apiGet,
   apiPost,
   apiPut
