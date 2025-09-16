@@ -20,17 +20,25 @@ function ensureArrayScopes(scopesParam) {
   return String(scopesParam).trim().split(/[,\s]+/).filter(Boolean);
 }
 
-// solo lo que APS Data Management acepta en 3LO
+// incluye openid (requerido si pides offline_access)
 const ALLOWED_SCOPES = new Set([
   'data:read', 'data:write', 'data:create',
   'viewables:read',
   'account:read',
-  'offline_access'
+  'offline_access',
+  'openid' 
 ]);
-function sanitizeScopes(list) {
-  return ensureArrayScopes(list).filter(s => ALLOWED_SCOPES.has(s));
-}
 
+function sanitizeScopes(list) {
+  const arr = ensureArrayScopes(list).filter(s => ALLOWED_SCOPES.has(s));
+  // regla: si pides offline_access, incluye openid
+  if (arr.includes('offline_access') && !arr.includes('openid')) {
+    arr.push('openid');
+  }
+  // mínimo razonable
+  if (!arr.length) arr.push('data:read');
+  return arr;
+}
 // --- auth urls ---
 /**
  * Devuelve la URL de autorización 3LO.

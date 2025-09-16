@@ -7,6 +7,7 @@ router.get('/auth/login', ctrl.login);
 router.get('/auth/callback', ctrl.callback);
 router.get('/auth/logout', ctrl.logout);
 router.get('/auth/whoami', ctrl.whoami);
+router.get('/auth/debug', ctrl.debugLogin);
 
 // Tests
 router.get('/hubs', ctrl.hubs);

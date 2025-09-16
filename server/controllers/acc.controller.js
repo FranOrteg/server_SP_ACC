@@ -2,6 +2,24 @@
 const aps = require('../clients/apsClient');
 const accSvc = require('../services/acc.service');
 
+async function debugLogin(req, res) {
+  try {
+    // Mismos pasos que login, pero sin redirigir
+    const raw = (req.query.scopes || '').toString();
+    const scopes = aps.sanitizeScopes(raw.split(/[,\s]+/).filter(Boolean));
+    const prompt = String(req.query.prompt || 'login').toLowerCase();
+    const url = aps.buildAuthUrl(scopes, prompt);
+    res.json({
+      note: 'Copia/abre este authorize URL en el navegador si quieres probar manualmente',
+      sanitizedScopes: scopes,
+      prompt,
+      authorizeUrl: url
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'server_error', message: e.message });
+  }
+}
+
 function parseScopesParam(q) {
   if (!q) return ['data:read'];
   if (Array.isArray(q)) q = q.join(' ');
@@ -82,4 +100,4 @@ async function list(req, res, next) {
   } catch (e) { next(e); }
 }
 
-module.exports = { login, callback, logout, whoami, hubs, projects, topFolders, list };
+module.exports = { login, callback, logout, whoami, hubs, projects, topFolders, list, debugLogin };
