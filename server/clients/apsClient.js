@@ -5,6 +5,7 @@ const qs = require('querystring');
 const APS_BASE = 'https://developer.api.autodesk.com';
 const AUTH_BASE = `${APS_BASE}/authentication/v2`;
 
+// Cache muy simple en memoria
 let tokenState = {
   access_token: null,
   refresh_token: null,
@@ -12,9 +13,28 @@ let tokenState = {
   scope: []
 };
 
+// --- helpers de scopes ---
+function ensureArrayScopes(scopesParam) {
+  if (!scopesParam) return ['data:read'];
+  if (Array.isArray(scopesParam)) return scopesParam;
+  return String(scopesParam).trim().split(/[,\s]+/).filter(Boolean);
+}
+
+// solo lo que APS Data Management acepta en 3LO
+const ALLOWED_SCOPES = new Set([
+  'data:read', 'data:write', 'data:create',
+  'viewables:read',
+  'account:read',
+  'offline_access'
+]);
+function sanitizeScopes(list) {
+  return ensureArrayScopes(list).filter(s => ALLOWED_SCOPES.has(s));
+}
+
+// --- auth urls ---
 /**
  * Devuelve la URL de autorización 3LO.
- * @param {string[]} scopes p.ej ['data:read','data:write','data:create','offline_access']
+ * @param {string[]|string} scopes p.ej ['data:read','data:write','data:create','offline_access']
  * @param {string} prompt 'login' | 'none' | 'create'
  */
 function buildAuthUrl(scopes = [], prompt = 'login') {
@@ -22,12 +42,18 @@ function buildAuthUrl(scopes = [], prompt = 'login') {
   if (!APS_CLIENT_ID || !APS_CALLBACK_URL)
     throw new Error('Faltan APS_CLIENT_ID o APS_CALLBACK_URL en .env');
 
+  const scopeList = sanitizeScopes(scopes);
+  if (!scopeList.length) scopeList.push('data:read'); // mínimo
+
+  const allowedPrompts = new Set(['login', 'none', 'create']);
+  const promptSafe = allowedPrompts.has(String(prompt)) ? String(prompt) : 'login';
+
   const params = {
     response_type: 'code',
     client_id: APS_CLIENT_ID,
     redirect_uri: APS_CALLBACK_URL,
-    scope: scopes.join(' '),
-    prompt
+    scope: scopeList.join(' '),
+    prompt: promptSafe
   };
   return `${AUTH_BASE}/authorize?${qs.stringify(params)}`;
 }
@@ -73,10 +99,10 @@ async function refreshTokenIfNeeded() {
 }
 
 function setToken(tok) {
-  tokenState.access_token = tok.access_token;
-  tokenState.refresh_token = tok.refresh_token || tokenState.refresh_token;
+  tokenState.access_token = tok.access_token || null;
+  tokenState.refresh_token = tok.refresh_token || tokenState.refresh_token || null;
   tokenState.scope = typeof tok.scope === 'string' ? tok.scope.split(' ') : (tok.scope || []);
-  tokenState.expires_at = Date.now() + (tok.expires_in || 0) * 1000; // seconds -> ms
+  tokenState.expires_at = Date.now() + ((tok.expires_in || 0) * 1000); // s → ms
 }
 
 function clearToken() {
@@ -87,10 +113,19 @@ async function getAccessToken() {
   return await refreshTokenIfNeeded();
 }
 
+// --- util: decodificar JWT (sin verificar, solo lectura) ---
+function decodeJwt(token) {
+  try {
+    const payload = token.split('.')[1];
+    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+  } catch (e) { return null; }
+}
+
 // ---- API helpers 3LO ----
 async function apiGet(url, config = {}) {
   const access = await getAccessToken();
-  const { data, status } = await axios.get(url.startsWith('http') ? url : `${APS_BASE}${url}`, {
+  const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
+  const { data, status } = await axios.get(full, {
     ...config,
     headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
   });
@@ -100,7 +135,8 @@ async function apiGet(url, config = {}) {
 
 async function apiPost(url, body, config = {}) {
   const access = await getAccessToken();
-  const { data, status } = await axios.post(url.startsWith('http') ? url : `${APS_BASE}${url}`, body, {
+  const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
+  const { data, status } = await axios.post(full, body, {
     ...config,
     headers: { 'Content-Type': 'application/json', ...(config.headers || {}), Authorization: `Bearer ${access}` }
   });
@@ -110,7 +146,8 @@ async function apiPost(url, body, config = {}) {
 
 async function apiPut(url, body, config = {}) {
   const access = await getAccessToken();
-  const { data, status } = await axios.put(url.startsWith('http') ? url : `${APS_BASE}${url}`, body, {
+  const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
+  const { data, status } = await axios.put(full, body, {
     ...config,
     headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
   });
@@ -126,5 +163,9 @@ module.exports = {
   getAccessToken,
   apiGet,
   apiPost,
-  apiPut
+  apiPut,
+  // extras
+  sanitizeScopes,
+  ensureArrayScopes,
+  decodeJwt
 };

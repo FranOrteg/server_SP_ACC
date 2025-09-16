@@ -118,4 +118,7 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
   }
 }
 
-module.exports = { copySharePointItemToAcc, copySpTreeToAcc };
+module.exports = { 
+  copySharePointItemToAcc, 
+  copySpTreeToAcc 
+};

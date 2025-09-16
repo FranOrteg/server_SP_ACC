@@ -10,10 +10,15 @@ function parseScopesParam(q) {
 
 async function login(req, res) {
   try {
-    const scopes = parseScopesParam(req.query.scopes);
-    const prompt = (req.query.prompt || 'login').toLowerCase();
+    // sanitizamos aquí por si el .rest trae 'openid' u otros
+    const raw = parseScopesParam(req.query.scopes);
+    const scopes = aps.sanitizeScopes(raw);
+    const prompt = String(req.query.prompt || 'login').toLowerCase();
     if (!['login', 'none', 'create'].includes(prompt)) {
-      return res.status(400).json({ error: "invalid_request", error_description: "'prompt' must be 'login', 'none', or 'create'." });
+      return res.status(400).json({
+        error: 'invalid_request',
+        error_description: "'prompt' must be 'login', 'none', or 'create'."
+      });
     }
     const url = aps.buildAuthUrl(scopes, prompt);
     res.redirect(url);
@@ -35,7 +40,23 @@ async function callback(req, res) {
 
 async function logout(req, res) {
   aps.clearToken();
-  res.json({ ok: true });
+  res.json({ ok: true, message: 'Tokens limpiados' });
+}
+
+async function whoami(req, res) {
+  try {
+    const access = await aps.getAccessToken();
+    const jwt = aps.decodeJwt(access) || {};
+    const scp = jwt.scp || jwt.scope || [];
+    res.json({
+      tokenScopes: scp,
+      exp: jwt.exp,
+      aud: jwt.aud,
+      iss: jwt.iss
+    });
+  } catch (e) {
+    res.status(401).json({ error: 'unauthorized', message: e.message });
+  }
 }
 
 // Pasarelas simples
@@ -61,4 +82,4 @@ async function list(req, res, next) {
   } catch (e) { next(e); }
 }
 
-module.exports = { login, callback, logout, hubs, projects, topFolders, list };
+module.exports = { login, callback, logout, whoami, hubs, projects, topFolders, list };
