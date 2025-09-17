@@ -2,14 +2,12 @@
 const router = require('express').Router();
 const ctrl = require('../../controllers/acc.controller');
 
-// OAuth 3LO
-router.get('/auth/login', ctrl.login);
-router.get('/auth/callback', ctrl.callback);
-router.get('/auth/logout', ctrl.logout);
-router.get('/auth/whoami', ctrl.whoami);
-router.get('/auth/debug', ctrl.debugLogin);
+// 2LO helpers
+router.get('/auth/mode', ctrl.mode);
+router.get('/auth/app-whoami', ctrl.appWhoAmI);
+router.post('/auth/clear', ctrl.clear);
 
-// Tests
+// ACC APIs
 router.get('/hubs', ctrl.hubs);
 router.get('/projects', ctrl.projects);
 router.get('/top-folders', ctrl.topFolders);

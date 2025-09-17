@@ -33,14 +33,14 @@ GET {{host}}/api/sp/root
 GET {{host}}{{urlSP}}/list?driveId={{DRIVE_ID}}
 
 ### 2) Busca el sitio (prueba con varias claves)
-GET {{host}}{{urlSP}}/find-sites?q=projects
+GET {{host}}{{urlSP}}/find-sites?q=lban0x
 
 ### 3) Lista drives directamente por URL (sin siteId)
-GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/projects
+GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/
 # o reemplaza con la webUrl exacta que te devolvió find-sites
 
 ### 4) (Opcional) Si quieres el siteId explícito
-GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/teams/projects
+GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/sites/lban0x
 
 ###
 GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=SP%20XXYYNN%20sencillo%2020240108
@@ -49,6 +49,9 @@ GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=SP%20XXYYNN%20sencillo%2
 ###########
 ### ACC ###
 ###########
+
+### 0.0) Limpiar Tokens
+GET {{host}}{{urlACC}}/auth/logout
 
 ### 0) Login con scopes de escritura (una sola vez por sesión)
 GET {{host}}{{urlACC}}/auth/login?scopes=data:read%20data:write%20data:create%20account:read%20viewables:read%20openid%20offline_access&prompt=login

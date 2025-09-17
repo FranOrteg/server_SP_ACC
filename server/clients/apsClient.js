@@ -5,120 +5,56 @@ const qs = require('querystring');
 const APS_BASE = 'https://developer.api.autodesk.com';
 const AUTH_BASE = `${APS_BASE}/authentication/v2`;
 
-// Cache muy simple en memoria
+// Cache simple en memoria para el token de aplicación (2LO)
 let tokenState = {
   access_token: null,
-  refresh_token: null,
-  expires_at: 0,
+  expires_at: 0, // epoch ms
   scope: []
 };
 
-// --- helpers de scopes ---
-function ensureArrayScopes(scopesParam) {
-  if (!scopesParam) return ['data:read'];
-  if (Array.isArray(scopesParam)) return scopesParam;
-  return String(scopesParam).trim().split(/[,\s]+/).filter(Boolean);
-}
-
-// incluye openid (requerido si pides offline_access)
-const ALLOWED_SCOPES = new Set([
-  'data:read', 'data:write', 'data:create',
-  'viewables:read',
-  'account:read',
-  'offline_access',
-  'openid' 
-]);
-
-function sanitizeScopes(list) {
-  const arr = ensureArrayScopes(list).filter(s => ALLOWED_SCOPES.has(s));
-  // regla: si pides offline_access, incluye openid
-  if (arr.includes('offline_access') && !arr.includes('openid')) {
-    arr.push('openid');
-  }
-  // mínimo razonable
-  if (!arr.length) arr.push('data:read');
-  return arr;
-}
-// --- auth urls ---
-/**
- * Devuelve la URL de autorización 3LO.
- * @param {string[]|string} scopes p.ej ['data:read','data:write','data:create','offline_access']
- * @param {string} prompt 'login' | 'none' | 'create'
- */
-function buildAuthUrl(scopes = [], prompt = 'login') {
-  const { APS_CLIENT_ID, APS_CALLBACK_URL } = process.env;
-  if (!APS_CLIENT_ID || !APS_CALLBACK_URL)
-    throw new Error('Faltan APS_CLIENT_ID o APS_CALLBACK_URL en .env');
-
-  const scopeList = sanitizeScopes(scopes);
-  if (!scopeList.length) scopeList.push('data:read'); // mínimo
-
-  const allowedPrompts = new Set(['login', 'none', 'create']);
-  const promptSafe = allowedPrompts.has(String(prompt)) ? String(prompt) : 'login';
-
-  const params = {
-    response_type: 'code',
-    client_id: APS_CLIENT_ID,
-    redirect_uri: APS_CALLBACK_URL,
-    scope: scopeList.join(' '),
-    prompt: promptSafe
-  };
-  return `${AUTH_BASE}/authorize?${qs.stringify(params)}`;
-}
-
-async function exchangeCodeForToken(code) {
-  const { APS_CLIENT_ID, APS_CLIENT_SECRET, APS_CALLBACK_URL } = process.env;
-  const url = `${AUTH_BASE}/token`;
-  const data = {
-    grant_type: 'authorization_code',
-    code,
-    client_id: APS_CLIENT_ID,
-    client_secret: APS_CLIENT_SECRET,
-    redirect_uri: APS_CALLBACK_URL
-  };
-  const { data: tok } = await axios.post(url, qs.stringify(data), {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  });
-  setToken(tok);
-  return tok;
-}
-
-async function refreshTokenIfNeeded() {
-  const now = Date.now();
-  if (tokenState.access_token && now < tokenState.expires_at - 30_000) {
-    return tokenState.access_token;
-  }
-  if (!tokenState.refresh_token) {
-    throw new Error('No hay refresh_token. Inicia sesión con /api/acc/auth/login.');
-  }
-  const { APS_CLIENT_ID, APS_CLIENT_SECRET } = process.env;
-  const url = `${AUTH_BASE}/token`;
-  const data = {
-    grant_type: 'refresh_token',
-    refresh_token: tokenState.refresh_token,
-    client_id: APS_CLIENT_ID,
-    client_secret: APS_CLIENT_SECRET
-  };
-  const { data: tok } = await axios.post(url, qs.stringify(data), {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  });
-  setToken(tok);
-  return tokenState.access_token;
+function getConfiguredScopes() {
+  const raw = process.env.APS_2LO_SCOPES || 'data:read';
+  return raw.trim().split(/[,\s]+/).filter(Boolean);
 }
 
 function setToken(tok) {
   tokenState.access_token = tok.access_token || null;
-  tokenState.refresh_token = tok.refresh_token || tokenState.refresh_token || null;
   tokenState.scope = typeof tok.scope === 'string' ? tok.scope.split(' ') : (tok.scope || []);
   tokenState.expires_at = Date.now() + ((tok.expires_in || 0) * 1000); // s → ms
 }
 
 function clearToken() {
-  tokenState = { access_token: null, refresh_token: null, expires_at: 0, scope: [] };
+  tokenState = { access_token: null, expires_at: 0, scope: [] };
 }
 
-async function getAccessToken() {
-  return await refreshTokenIfNeeded();
+function isTokenValid() {
+  return tokenState.access_token && Date.now() < (tokenState.expires_at - 30_000);
+}
+
+// === 2LO: client_credentials ===
+async function getAppAccessToken() {
+  if (isTokenValid()) return tokenState.access_token;
+
+  const { APS_CLIENT_ID, APS_CLIENT_SECRET } = process.env;
+  if (!APS_CLIENT_ID || !APS_CLIENT_SECRET) {
+    throw new Error('Faltan APS_CLIENT_ID o APS_CLIENT_SECRET en .env');
+  }
+
+  const scopes = getConfiguredScopes().join(' ');
+  const url = `${AUTH_BASE}/token`;
+  const data = {
+    grant_type: 'client_credentials',
+    client_id: APS_CLIENT_ID,
+    client_secret: APS_CLIENT_SECRET,
+    scope: scopes
+  };
+
+  const { data: tok } = await axios.post(url, qs.stringify(data), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: 15000
+  });
+  setToken(tok);
+  return tokenState.access_token;
 }
 
 // --- util: decodificar JWT (sin verificar, solo lectura) ---
@@ -129,9 +65,9 @@ function decodeJwt(token) {
   } catch (e) { return null; }
 }
 
-// ---- API helpers 3LO ----
+// ---- API helpers (2LO) ----
 async function apiGet(url, config = {}) {
-  const access = await getAccessToken();
+  const access = await getAppAccessToken();
   const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
   const { data, status } = await axios.get(full, {
     ...config,
@@ -142,7 +78,7 @@ async function apiGet(url, config = {}) {
 }
 
 async function apiPost(url, body, config = {}) {
-  const access = await getAccessToken();
+  const access = await getAppAccessToken();
   const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
   const { data, status } = await axios.post(full, body, {
     ...config,
@@ -153,7 +89,7 @@ async function apiPost(url, body, config = {}) {
 }
 
 async function apiPut(url, body, config = {}) {
-  const access = await getAccessToken();
+  const access = await getAppAccessToken();
   const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
   const { data, status } = await axios.put(full, body, {
     ...config,
@@ -164,16 +100,12 @@ async function apiPut(url, body, config = {}) {
 }
 
 module.exports = {
-  buildAuthUrl,
-  exchangeCodeForToken,
-  setToken,
+  // 2LO only
+  getAppAccessToken,
   clearToken,
-  getAccessToken,
+  decodeJwt,
   apiGet,
   apiPost,
   apiPut,
-  // extras
-  sanitizeScopes,
-  ensureArrayScopes,
-  decodeJwt
+  getConfiguredScopes
 };

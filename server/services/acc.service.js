@@ -99,7 +99,7 @@ function parseStorageUrn(storageUrn) {
 
 async function uploadFileToStorage(storageUrn, localFilePath) {
   const { bucketKey, objectName } = parseStorageUrn(storageUrn);
-  const accessToken = await aps.getAccessToken();
+  const accessToken = await aps.getAppAccessToken();
 
   const size = fs.statSync(localFilePath).size;
   const stream = fs.createReadStream(localFilePath);
