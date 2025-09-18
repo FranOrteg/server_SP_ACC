@@ -84,7 +84,9 @@ GET {{host}}{{urlBridge}}/sp-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}
 ### 7) Copia RECURSIVA SP → ACC (dry-run primero)
 POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&mode=upsert&dryRun=true
 
-### 8) Ejecutar de verdad
+#########################
+### 8) Ejecutar Real ####
+#########################
 POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&mode=upsert&dryRun=false
 
 
@@ -108,3 +110,6 @@ GET {{host}}/api/acc/tree?projectId={{PROJECT_ID}}&maxDepth=3
 ### FolderID de la carpeta creada en projects Files : urn:adsk.wipprod:fs.folder:co.OTrCYRk0Rtetbr5nqktV2w
 
 GET {{host}}{{urlACC}}/project-info?projectId={{PROJECT_ID}}
+
+### Obtener FolderID por path
+GET {{host}}{{urlACC}}/folderByPath?projectId={{PROJECT_ID}}&path=/Project%20Files/root/1_COMM&create=false

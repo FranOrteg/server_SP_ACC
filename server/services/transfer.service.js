@@ -84,7 +84,10 @@ async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, s
 async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRun, onLog, summary) {
   const fileName = spItem.name;
   const size = spItem.size || 0;
+
+  // ¿ya existe en ACC?
   const existing = await acc.findItemByName(projectId, destFolderId, fileName);
+  console.log(`[XFER][file] name=${fileName} size=${size} destFolderId=${destFolderId} exists=${!!existing}`);
 
   if (existing && mode === 'skip') {
     onLog(`⏭️  skip (existe): ${fileName}`);
@@ -98,26 +101,34 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
   }
 
   const tmpPath = await sp.downloadItemToTmp(driveId, spItem.id);
+  console.log(`[XFER][tmp] ${tmpPath}`);
 
   try {
     const storageUrn = await acc.createStorage(projectId, destFolderId, fileName);
-    console.log('[XFER] created storage:', storageUrn, '→', fileName, 'size:', size);
+    console.log(`[XFER][storage] ${storageUrn} → ${fileName} size: ${size}`);
+
+    // **pasa projectId para resolver región del hub**
     await acc.uploadFileToStorage(storageUrn, tmpPath, { projectId });
 
     if (!existing) {
-      await acc.createItem(projectId, destFolderId, fileName, storageUrn);
+      const created = await acc.createItem(projectId, destFolderId, fileName, storageUrn);
+      const newVersionId = (created.included || []).find(i => i.type === 'versions')?.id;
+      console.log(`[XFER][item-created] itemId=${created.data?.id} versionId=${newVersionId} name=${fileName} inFolder=${destFolderId}`);
       summary.filesUploaded++;
+      onLog(`✅ file OK: ${fileName}`);
     } else {
-      await acc.createVersion(projectId, existing.id, fileName, storageUrn);
+      const ver = await acc.createVersion(projectId, existing.id, fileName, storageUrn);
+      console.log(`[XFER][version-created] itemId=${existing.id} versionId=${ver.data?.id} name=${fileName}`);
       summary.versionsCreated++;
+      onLog(`✅ version OK: ${fileName}`);
     }
 
     summary.bytesUploaded += size;
-    onLog(`✅ ${existing ? 'version' : 'file'} OK: ${fileName}`);
   } finally {
     try { fs.unlinkSync(tmpPath); } catch {}
   }
 }
+
 
 module.exports = { 
   copySharePointItemToAcc, 
