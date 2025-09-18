@@ -84,6 +84,17 @@ async function folderByPath(req, res, next) {
   } catch (e) { next(e); }
 }
 
+// controllers/acc.controller.js
+async function projectInfo(req, res, next) {
+  try {
+    const { projectId } = req.query;
+    if (!projectId) return res.status(400).json({ error: 'projectId es obligatorio' });
+    const info = await accSvc.getTopFoldersByProjectId(projectId);
+    res.json({ hubId: info.hubId, region: info.hubRegion, topFolders: info.topFolders?.map(f => f.attributes?.displayName) });
+  } catch (e) { next(e); }
+}
+
+
 module.exports = {
   mode,
   appWhoAmI,
@@ -93,5 +104,6 @@ module.exports = {
   topFolders,
   list,
   projectTree,
-  folderByPath
+  folderByPath,
+  projectInfo
 };

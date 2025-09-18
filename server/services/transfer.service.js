@@ -101,7 +101,8 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
 
   try {
     const storageUrn = await acc.createStorage(projectId, destFolderId, fileName);
-    await acc.uploadFileToStorage(storageUrn, tmpPath);
+    console.log('[XFER] created storage:', storageUrn, '→', fileName, 'size:', size);
+    await acc.uploadFileToStorage(storageUrn, tmpPath, { projectId });
 
     if (!existing) {
       await acc.createItem(projectId, destFolderId, fileName, storageUrn);

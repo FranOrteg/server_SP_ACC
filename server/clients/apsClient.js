@@ -13,7 +13,8 @@ let tokenState = {
 };
 
 function getConfiguredScopes() {
-  const raw = process.env.APS_2LO_SCOPES || 'data:read';
+  // Para subir a ACC necesitas como mínimo data:read data:write data:create (+ account:read si listas proyectos)
+  const raw = process.env.APS_2LO_SCOPES || 'data:read data:write data:create account:read';
   return raw.trim().split(/[,\s]+/).filter(Boolean);
 }
 
@@ -54,8 +55,11 @@ async function getAppAccessToken() {
     timeout: 15000
   });
   setToken(tok);
-  const payload = decodeJwt(tokenState.access_token);
-  console.log('[APS 2LO] scopes:', tokenState.scope, 'aud:', payload?.aud, 'exp:', payload?.exp);
+  const payload = decodeJwt(tokenState.access_token) || {};
+  // Autodesk suele devolver "scope" como string con espacios; también puedes ver "scp" en el JWT
+  const scopesFromTok = typeof tok.scope === 'string' ? tok.scope.split(' ') : (tok.scope || []);
+  const scopesFromJwt = Array.isArray(payload.scp) ? payload.scp : [];
+  console.log('[APS 2LO] scopes(env):', getConfiguredScopes(), 'scopes(tok):', scopesFromTok, 'scopes(jwt):', scopesFromJwt, 'aud:', payload.aud, 'exp:', payload.exp);
   return tokenState.access_token;
 }
 

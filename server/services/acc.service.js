@@ -97,27 +97,74 @@ function parseStorageUrn(storageUrn) {
   return { bucketKey: m[1], objectName: m[2] };
 }
 
-async function uploadFileToStorage(storageUrn, localFilePath) {
+// --- STORAGE + UPLOAD (Signed S3 Upload para ACC/WIP) ---
+async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
+  // 0) Parse y contexto
   const { bucketKey, objectName } = parseStorageUrn(storageUrn);
-  const accessToken = await aps.getAppAccessToken();
-
   const size = fs.statSync(localFilePath).size;
-  const stream = fs.createReadStream(localFilePath);
 
-  const url = `https://developer.api.autodesk.com/oss/v2/buckets/${encodeURIComponent(bucketKey)}/objects/${encodeURIComponent(objectName)}`;
-  const { data, status } = await axios.put(url, stream, {
+  // Región del hub (clave para WIP)
+  let region = (process.env.APS_REGION || 'US').toUpperCase();
+  let hubId = null;
+  if (opts.projectId) {
+    try {
+      const { hubId: h, hubRegion } = await getTopFoldersByProjectId(opts.projectId);
+      hubId = h;
+      region = (hubRegion || region).toUpperCase();
+    } catch (_) { /* fallback US */ }
+  }
+
+  console.log('[UPLOAD] storageUrn:', storageUrn);
+  console.log('[UPLOAD] hubId:', hubId, 'region:', region);
+  console.log('[UPLOAD] bucket:', bucketKey, 'objectKey:', objectName, 'size:', size);
+
+  // 1) INIT: conseguir URL(s) firmadas de S3 + uploadKey
+  const base = `/oss/v2/buckets/${encodeURIComponent(bucketKey)}/objects/${encodeURIComponent(objectName)}/signeds3upload?scoped=true`;
+  let init;
+  try {
+    const initUrl = `${base}&firstPart=1&parts=1`;
+    console.log('[UPLOAD] GET', initUrl);
+    init = await aps.apiGet(initUrl, { headers: { 'x-ads-region': region } });
+  } catch (e) {
+    // Algunos despliegues aceptan POST-init; probamos fallback si el GET falla
+    console.log('[UPLOAD] GET init failed, trying POST-init… reason:', e?.response?.data || e?.message);
+    const body = { contentType: 'application/octet-stream', contentLength: size };
+    init = await aps.apiPost(base, body, { headers: { 'x-ads-region': region } });
+  }
+
+  console.log('[UPLOAD][init] raw resp keys:', Object.keys(init || {}));
+  const uploadKey = init.uploadKey || init.data?.uploadKey || init.result?.uploadKey;
+  const urls = init.urls || init.data?.urls || init.result?.urls;
+  const uploadUrl = Array.isArray(urls) ? (urls[0]?.url || urls[0]) : (urls?.[0]?.url || urls?.uploadUrl);
+
+  if (!uploadKey || !uploadUrl) {
+    throw new Error(`[signeds3upload:init] respuesta inesperada: ${JSON.stringify(init)}`);
+  }
+  console.log('[UPLOAD][init] uploadKey:', uploadKey);
+  console.log('[UPLOAD][init] uploadUrl:', String(uploadUrl).slice(0, 120) + '…');
+
+  // 2) Subir a S3 con la URL firmada (¡sin Authorization de APS!)
+  const stream = fs.createReadStream(localFilePath);
+  const putRes = await axios.put(uploadUrl, stream, {
     headers: {
-      Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/octet-stream',
       'Content-Length': size
     },
     maxBodyLength: Infinity,
-    maxContentLength: Infinity
+    maxContentLength: Infinity,
+    timeout: 0
   });
+  console.log('[UPLOAD][s3] status:', putRes.status);
 
-  if (status < 200 || status >= 300) throw new Error(`Fallo subiendo a OSS (${status})`);
-  return data;
+  // 3) COMPLETE: informar a APS que el upload terminó
+  const completeBody = { uploadKey };
+  console.log('[UPLOAD] POST', base, 'body:', completeBody);
+  const fin = await aps.apiPost(base, completeBody, { headers: { 'x-ads-region': region } });
+  console.log('[UPLOAD][complete] ok. keys:', Object.keys(fin || {}));
+
+  return { ok: true, region, uploadKey };
 }
+
 
 // --- ARCHIVOS ---
 async function findItemByName(projectId, folderId, fileName) {
@@ -198,14 +245,6 @@ async function findHubForProject(projectId) {
   throw new Error(`projectId ${projectId} no encontrado en ninguno de los hubs accesibles`);
 }
 
-// --- obtener top folders usando solo projectId (auto hub) ---
-async function getTopFoldersByProjectId(projectId) {
-  const hubId = await findHubForProject(projectId);
-  const u = `/project/v1/hubs/${encodeURIComponent(hubId)}/projects/${encodeURIComponent(projectId)}/topFolders`;
-  const resp = await aps.apiGet(u);
-  // Normalmente vienen 2: Project Files y Plans
-  return { hubId, topFolders: resp?.data || [] };
-}
 
 // --- construir árbol recursivo ---
 async function listProjectTree(projectId, { includeItems = false, maxDepth = Infinity } = {}) {
@@ -317,6 +356,33 @@ async function ensureFolderByPath(projectId, path) {
   }
   return currentId; // folderId final
 }
+
+// --- REGION + HUB UTILS ---
+async function getTopFoldersByProjectId(projectId) {
+  const hubs = await aps.apiGet('/project/v1/hubs');
+
+  for (const h of (hubs.data || [])) {
+    const hubId = h.id;
+    try {
+      const u = `/project/v1/hubs/${encodeURIComponent(hubId)}/projects/${encodeURIComponent(projectId)}/topFolders`;
+      const tf = await aps.apiGet(u);
+
+      const hubRegion =
+        (h?.attributes?.extension?.data?.region ||  // ACC/BIM 360 actual
+         h?.attributes?.region ||                    // por si acaso legacy
+         'US').toUpperCase();
+
+      return { hubId, topFolders: tf.data || [], hubRegion };
+    } catch (e) {
+      // Si el proyecto no está en ese hub, suelen devolver 404; probamos el siguiente.
+      if (e?.response?.status === 404) continue;
+      // Otros errores: seguimos probando el siguiente hub también.
+    }
+  }
+
+  throw new Error(`No se pudo resolver hub/topFolders para projectId ${projectId}`);
+}
+
 
 module.exports = {
   listHubs,

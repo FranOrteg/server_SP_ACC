@@ -106,3 +106,5 @@ GET {{host}}/api/acc/tree?projectId={{PROJECT_ID}}&maxDepth=3
 
 
 ### FolderID de la carpeta creada en projects Files : urn:adsk.wipprod:fs.folder:co.OTrCYRk0Rtetbr5nqktV2w
+
+GET {{host}}{{urlACC}}/project-info?projectId={{PROJECT_ID}}
