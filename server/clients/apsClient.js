@@ -1,6 +1,8 @@
 // clients/apsClient.js
 const axios = require('axios');
 const qs = require('querystring');
+const http  = require('http');
+const https = require('https');
 
 const APS_BASE = 'https://developer.api.autodesk.com';
 const AUTH_BASE = `${APS_BASE}/authentication/v2`;
@@ -32,6 +34,64 @@ function isTokenValid() {
   return tokenState.access_token && Date.now() < (tokenState.expires_at - 30_000);
 }
 
+// --- util: decodificar JWT (sin verificar, solo lectura) ---
+function decodeJwt(token) {
+  try {
+    const payload = token.split('.')[1];
+    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+  } catch (e) { return null; }
+}
+
+// ===== Infra HTTP (keep-alive + reintentos) =====
+const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 60_000
+});
+const httpAgent  = new http.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 60_000
+});
+
+const ax = axios.create({
+  baseURL: APS_BASE,
+  httpAgent,
+  httpsAgent,
+  maxBodyLength: Infinity,
+  maxContentLength: Infinity,
+  timeout: 60_000
+});
+
+// Reintentos con backoff para errores transitorios (ECONNRESET, 50x, etc.)
+async function withRetry(label, fn, { tries = 5, base = 400, factor = 1.8 } = {}) {
+  let last;
+  for (let i = 1; i <= tries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const code   = err.code || err?.cause?.code;
+      const status = err.response?.status;
+      const networkError = !err.response;
+      const retryableCodes  = new Set(['ECONNRESET','ETIMEDOUT','EAI_AGAIN','ECONNABORTED','ENOTFOUND','EPIPE']);
+      const retryableStatus = new Set([408,425,429,500,502,503,504]);
+      const shouldRetry = networkError || retryableCodes.has(code) || retryableStatus.has(status);
+
+      console.warn(`[HTTP][retry] ${label} intento ${i}/${tries} -> ${status || code || 'no-response'} ${err.message}`);
+      if (!shouldRetry || i === tries) throw err;
+
+      const wait = Math.floor(base * Math.pow(factor, i - 1) + Math.random() * 100);
+      await sleep(wait);
+      last = err;
+    }
+  }
+  throw last;
+}
+
 // === 2LO: client_credentials ===
 async function getAppAccessToken() {
   if (isTokenValid()) return tokenState.access_token;
@@ -56,24 +116,13 @@ async function getAppAccessToken() {
   });
   setToken(tok);
   const payload = decodeJwt(tokenState.access_token) || {};
-  // Autodesk suele devolver "scope" como string con espacios; también puedes ver "scp" en el JWT
   const scopesFromTok = typeof tok.scope === 'string' ? tok.scope.split(' ') : (tok.scope || []);
   const scopesFromJwt = Array.isArray(payload.scp) ? payload.scp : [];
   console.log('[APS 2LO] scopes(env):', getConfiguredScopes(), 'scopes(tok):', scopesFromTok, 'scopes(jwt):', scopesFromJwt, 'aud:', payload.aud, 'exp:', payload.exp);
   return tokenState.access_token;
 }
 
-// --- util: decodificar JWT (sin verificar, solo lectura) ---
-
-function decodeJwt(token) {
-  try {
-    const payload = token.split('.')[1];
-    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
-  } catch (e) { return null; }
-}
-
 // ---- API helpers (2LO) ----
-
 function logApsError(prefix, err) {
   try {
     const payload = err?.response?.data;
@@ -87,52 +136,59 @@ function logApsError(prefix, err) {
 
 async function apiGet(url, config = {}) {
   const access = await getAppAccessToken();
-  const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
+  const path = url.startsWith('http') ? url.replace(APS_BASE, '') : url;
   try {
-    const { data, status } = await axios.get(full, {
-      ...config,
-      headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+    return await withRetry(`GET ${path}`, async () => {
+      const { data, status } = await ax.get(path, {
+        ...config,
+        headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+      });
+      if (status < 200 || status >= 300) throw new Error(`GET ${path} => ${status}`);
+      return data;
     });
-    if (status < 200 || status >= 300) throw new Error(`GET ${url} => ${status}`);
-    return data;
   } catch (err) {
-    logApsError(`GET ${url}`, err);
+    logApsError(`GET ${path}`, err);
     throw err;
   }
 }
 
 async function apiPost(url, body, config = {}) {
   const access = await getAppAccessToken();
-  const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
+  const path = url.startsWith('http') ? url.replace(APS_BASE, '') : url;
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(config.headers || {}),
+    Authorization: `Bearer ${access}`
+  };
   try {
-    const { data, status } = await axios.post(full, body, {
-      ...config,
-      headers: { 'Content-Type': 'application/json', ...(config.headers || {}), Authorization: `Bearer ${access}` }
+    return await withRetry(`POST ${path}`, async () => {
+      const { data, status } = await ax.post(path, body, { ...config, headers });
+      if (status < 200 || status >= 300) throw new Error(`POST ${path} => ${status}`);
+      return data;
     });
-    if (status < 200 || status >= 300) throw new Error(`POST ${url} => ${status}`);
-    return data;
   } catch (err) {
-    logApsError(`POST ${url}`, err);
+    logApsError(`POST ${path}`, err);
     throw err;
   }
 }
 
 async function apiPut(url, body, config = {}) {
   const access = await getAppAccessToken();
-  const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
+  const path = url.startsWith('http') ? url.replace(APS_BASE, '') : url;
   try {
-    const { data, status } = await axios.put(full, body, {
-      ...config,
-      headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+    return await withRetry(`PUT ${path}`, async () => {
+      const { data, status } = await ax.put(path, body, {
+        ...config,
+        headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+      });
+      if (status < 200 || status >= 300) throw new Error(`PUT ${path} => ${status}`);
+      return data;
     });
-    if (status < 200 || status >= 300) throw new Error(`PUT ${url} => ${status}`);
-    return data;
   } catch (err) {
-    logApsError(`PUT ${url}`, err);
+    logApsError(`PUT ${path}`, err);
     throw err;
   }
 }
-
 
 module.exports = {
   // 2LO only
@@ -142,5 +198,6 @@ module.exports = {
   apiGet,
   apiPost,
   apiPut,
-  getConfiguredScopes
+  getConfiguredScopes,
+  sleep
 };

@@ -2,6 +2,7 @@
 const fs = require('fs');
 const axios = require('axios');
 const aps = require('../clients/apsClient');
+const { sleep } = require('../clients/apsClient');
 
 // --- LISTAR ---
 async function listHubs() {
@@ -99,11 +100,9 @@ function parseStorageUrn(storageUrn) {
 
 // --- STORAGE + UPLOAD (Signed S3 Upload para ACC/WIP) ---
 async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
-  // 0) Parse y contexto
   const { bucketKey, objectName } = parseStorageUrn(storageUrn);
   const size = fs.statSync(localFilePath).size;
 
-  // Región del hub (clave para WIP)
   let region = (process.env.APS_REGION || 'US').toUpperCase();
   let hubId = null;
   if (opts.projectId) {
@@ -111,22 +110,22 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
       const { hubId: h, hubRegion } = await getTopFoldersByProjectId(opts.projectId);
       hubId = h;
       region = (hubRegion || region).toUpperCase();
-    } catch (_) { /* fallback US */ }
+    } catch (_) {}
   }
 
   console.log('[UPLOAD] storageUrn:', storageUrn);
   console.log('[UPLOAD] hubId:', hubId, 'region:', region);
   console.log('[UPLOAD] bucket:', bucketKey, 'objectKey:', objectName, 'size:', size);
 
-  // 1) INIT: conseguir URL(s) firmadas de S3 + uploadKey
   const base = `/oss/v2/buckets/${encodeURIComponent(bucketKey)}/objects/${encodeURIComponent(objectName)}/signeds3upload?scoped=true`;
+
+  // INIT
   let init;
   try {
     const initUrl = `${base}&firstPart=1&parts=1`;
     console.log('[UPLOAD] GET', initUrl);
     init = await aps.apiGet(initUrl, { headers: { 'x-ads-region': region } });
   } catch (e) {
-    // Algunos despliegues aceptan POST-init; probamos fallback si el GET falla
     console.log('[UPLOAD] GET init failed, trying POST-init… reason:', e?.response?.data || e?.message);
     const body = { contentType: 'application/octet-stream', contentLength: size };
     init = await aps.apiPost(base, body, { headers: { 'x-ads-region': region } });
@@ -136,31 +135,29 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
   const uploadKey = init.uploadKey || init.data?.uploadKey || init.result?.uploadKey;
   const urls = init.urls || init.data?.urls || init.result?.urls;
   const uploadUrl = Array.isArray(urls) ? (urls[0]?.url || urls[0]) : (urls?.[0]?.url || urls?.uploadUrl);
+  if (!uploadKey || !uploadUrl) throw new Error(`[signeds3upload:init] respuesta inesperada: ${JSON.stringify(init)}`);
 
-  if (!uploadKey || !uploadUrl) {
-    throw new Error(`[signeds3upload:init] respuesta inesperada: ${JSON.stringify(init)}`);
-  }
   console.log('[UPLOAD][init] uploadKey:', uploadKey);
   console.log('[UPLOAD][init] uploadUrl:', String(uploadUrl).slice(0, 120) + '…');
 
-  // 2) Subir a S3 con la URL firmada (¡sin Authorization de APS!)
+  // PUT a S3 (sin auth APS)
   const stream = fs.createReadStream(localFilePath);
   const putRes = await axios.put(uploadUrl, stream, {
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': size
-    },
+    headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': size },
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
     timeout: 0
   });
   console.log('[UPLOAD][s3] status:', putRes.status);
 
-  // 3) COMPLETE: informar a APS que el upload terminó
+  // COMPLETE
   const completeBody = { uploadKey };
   console.log('[UPLOAD] POST', base, 'body:', completeBody);
   const fin = await aps.apiPost(base, completeBody, { headers: { 'x-ads-region': region } });
   console.log('[UPLOAD][complete] ok. keys:', Object.keys(fin || {}));
+
+  // Pequeña pausa para evitar condiciones de consistencia antes de crear item/version
+  await sleep(300);
 
   return { ok: true, region, uploadKey };
 }
@@ -176,13 +173,18 @@ async function findItemByName(projectId, folderId, fileName) {
   return item || null;
 }
 
+function normalizeName(name) {
+  try { return String(name || '').normalize('NFC'); } catch { return name; }
+}
+
 async function createItem(projectId, folderId, fileName, storageUrn) {
+  const safe = normalizeName(fileName);
   const body = {
     jsonapi: { version: '1.0' },
     data: {
       type: 'items',
       attributes: {
-        displayName: fileName,
+        displayName: safe,
         extension: { type: 'items:autodesk.bim360:File', version: '1.0' }
       },
       relationships: {
@@ -190,30 +192,34 @@ async function createItem(projectId, folderId, fileName, storageUrn) {
         parent: { data: { type: 'folders', id: folderId } }
       }
     },
-    included: [
-      {
-        type: 'versions',
-        id: '1',
-        attributes: {
-          name: fileName,
-          extension: { type: 'versions:autodesk.bim360:File', version: '1.0' }
-        },
-        relationships: {
-          storage: { data: { type: 'objects', id: storageUrn } }
-        }
+    included: [{
+      type: 'versions',
+      id: '1',
+      attributes: {
+        name: safe,
+        extension: { type: 'versions:autodesk.bim360:File', version: '1.0' }
+      },
+      relationships: {
+        storage: { data: { type: 'objects', id: storageUrn } }
       }
-    ]
+    }]
   };
-  return await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/items`, body);
+
+  return await aps.apiPost(
+    `/data/v1/projects/${encodeURIComponent(projectId)}/items`,
+    body,
+    { headers: { 'Content-Type': 'application/vnd.api+json' } }
+  );
 }
 
 async function createVersion(projectId, itemId, fileName, storageUrn) {
+  const safe = normalizeName(fileName);
   const body = {
     jsonapi: { version: '1.0' },
     data: {
       type: 'versions',
       attributes: {
-        name: fileName,
+        name: safe,
         extension: { type: 'versions:autodesk.bim360:File', version: '1.0' }
       },
       relationships: {
@@ -222,7 +228,12 @@ async function createVersion(projectId, itemId, fileName, storageUrn) {
       }
     }
   };
-  return await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/versions`, body);
+
+  return await aps.apiPost(
+    `/data/v1/projects/${encodeURIComponent(projectId)}/versions`,
+    body,
+    { headers: { 'Content-Type': 'application/vnd.api+json' } }
+  );
 }
 
 // --- util: intenta encontrar el hub que contiene un projectId ---
@@ -399,5 +410,6 @@ module.exports = {
   parseStorageUrn,
   listProjectTree,
   getProjectFilesFolderId,
-  ensureFolderByPath
+  ensureFolderByPath,
+  getTopFoldersByProjectId
 };

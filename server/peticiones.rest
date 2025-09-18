@@ -12,8 +12,8 @@
 
 @HUB_ID=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
 
-@SP_DRIVE_ID=b!DQOmTDWg4UCWLUzjVxfVHsgBQQSZtqtIhu-TIGdbQBu81Wu7u7k0S6njwic8UIS3
-@SP_ITEM_ID=01KWI7RKN6Y2GOVW7725BZO354PWSELRRZ
+@SP_DRIVE_ID=b!d5QosKvs2UioPhAjo0wb0pIwEOAI6gJFiVK9Ol6Wq4CDbJLG4PnsSLC3Se6Amz3W
+@SP_ITEM_ID=01C4J77HV6Y2GOVW7725BZO354PWSELRRZ
 @NOMBRE_DESTINO_OPCIONAL=test
 
 ##############
@@ -33,14 +33,13 @@ GET {{host}}/api/sp/root
 GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}
 
 ### 2) Busca el sitio (prueba con varias claves)
-GET {{host}}{{urlSP}}/find-sites?q=lban0x
+GET {{host}}{{urlSP}}/find-sites?q=LBHR01
 
 ### 3) Lista drives directamente por URL (sin siteId)
-GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/sites/LBAN0X
-# o reemplaza con la webUrl exacta que te devolvió find-sites
+GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/sites/LBHR01
 
 ### 4) (Opcional) Si quieres el siteId explícito
-GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/sites/lban0x
+GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/sites/LBHR01
 
 ###
 GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=1_COMM
