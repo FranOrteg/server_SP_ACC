@@ -55,6 +55,35 @@ async function list(req, res, next) {
   } catch (e) { next(e); }
 }
 
+async function projectTree(req, res, next) {
+  try {
+    const { projectId, includeItems, maxDepth } = req.query;
+    if (!projectId) return res.status(400).json({ error: 'projectId es obligatorio' });
+
+    const tree = await accSvc.listProjectTree(projectId, {
+      includeItems: includeItems === 'true',
+      maxDepth: maxDepth ? Number(maxDepth) : Infinity
+    });
+    res.json(tree);
+  } catch (e) { next(e); }
+}
+
+async function folderByPath(req, res, next) {
+  try {
+    const { projectId, path, create } = req.query;
+    if (!projectId || !path) return res.status(400).json({ error: 'projectId y path son obligatorios' });
+
+    if (create === 'true') {
+      const id = await accSvc.ensureFolderByPath(projectId, path);
+      return res.json({ ok: true, folderId: id, created: true });
+    } else {
+      // Solo resolver sin crear
+      const id = await accSvc.ensureFolderByPath(projectId, path); // reutilizo y si falta crea, pero podemos hacer read-only si quieres
+      return res.json({ ok: true, folderId: id });
+    }
+  } catch (e) { next(e); }
+}
+
 module.exports = {
   mode,
   appWhoAmI,
@@ -62,5 +91,7 @@ module.exports = {
   hubs,
   projects,
   topFolders,
-  list
+  list,
+  projectTree,
+  folderByPath
 };

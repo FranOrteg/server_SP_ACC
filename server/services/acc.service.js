@@ -178,6 +178,146 @@ async function createVersion(projectId, itemId, fileName, storageUrn) {
   return await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/versions`, body);
 }
 
+// --- util: intenta encontrar el hub que contiene un projectId ---
+async function findHubForProject(projectId) {
+  const hubsResp = await aps.apiGet('/project/v1/hubs');
+  const hubs = (hubsResp?.data || []).map(h => h.id);
+
+  for (const hubId of hubs) {
+    try {
+      // Si el proyecto no está en ese hub, Autodesk devuelve 404
+      await aps.apiGet(`/project/v1/hubs/${encodeURIComponent(hubId)}/projects/${encodeURIComponent(projectId)}`);
+      return hubId; // encontrado
+    } catch (e) {
+      const status = e?.response?.status;
+      if (status === 404) continue; // prueba el siguiente hub
+      // Otros códigos: propaga (403/401/etc.)
+      throw e;
+    }
+  }
+  throw new Error(`projectId ${projectId} no encontrado en ninguno de los hubs accesibles`);
+}
+
+// --- obtener top folders usando solo projectId (auto hub) ---
+async function getTopFoldersByProjectId(projectId) {
+  const hubId = await findHubForProject(projectId);
+  const u = `/project/v1/hubs/${encodeURIComponent(hubId)}/projects/${encodeURIComponent(projectId)}/topFolders`;
+  const resp = await aps.apiGet(u);
+  // Normalmente vienen 2: Project Files y Plans
+  return { hubId, topFolders: resp?.data || [] };
+}
+
+// --- construir árbol recursivo ---
+async function listProjectTree(projectId, { includeItems = false, maxDepth = Infinity } = {}) {
+  const { hubId, topFolders } = await getTopFoldersByProjectId(projectId);
+
+  // Nodo raíz “virtual” que agrupa los top folders
+  const root = {
+    projectId,
+    hubId,
+    type: 'project',
+    name: `project:${projectId}`,
+    children: []
+  };
+
+  // BFS para no reventar la pila en proyectos grandes
+  const queue = [];
+  for (const tf of topFolders) {
+    const node = {
+      id: tf.id,
+      type: tf.type,                 // 'folders'
+      name: tf.attributes?.displayName || tf.attributes?.name,
+      path: `/${tf.attributes?.displayName || tf.attributes?.name}`,
+      children: []
+    };
+    root.children.push(node);
+    queue.push({ node, depth: 1 });
+  }
+
+  while (queue.length) {
+    const { node, depth } = queue.shift();
+    if (depth > maxDepth) continue;
+
+    // Lista contenidos de la carpeta
+    const page = await listFolderContents(projectId, node.id, { all: true, limit: 200 });
+    const entries = page?.data || [];
+
+    for (const entry of entries) {
+      const isFolder = entry.type === 'folders';
+      const display = entry.attributes?.displayName || entry.attributes?.name;
+      const child = {
+        id: entry.id,
+        type: entry.type, // 'folders' | 'items'
+        name: display,
+        path: `${node.path}/${display}`
+      };
+
+      // Si es carpeta, la encolamos para seguir bajando
+      if (isFolder) {
+        child.children = [];
+        node.children.push(child);
+        queue.push({ node: child, depth: depth + 1 });
+      } else {
+        // 'items': solo añadimos si includeItems=true
+        if (includeItems) node.children.push(child);
+      }
+    }
+  }
+
+  return root;
+}
+
+
+// Devuelve el 'Project Files' folderId del proyecto (buscando en topFolders)
+async function getProjectFilesFolderId(projectId) {
+  const { hubId, topFolders } = await getTopFoldersByProjectId(projectId);
+  const pf = (topFolders || []).find(f =>
+    (f.attributes?.displayName || f.attributes?.name || '').toLowerCase() === 'project files'
+  );
+  if (!pf) throw new Error(`No se encontró "Project Files" en projectId ${projectId} (hubId ${hubId})`);
+  return pf.id;
+}
+
+// Normaliza ruta (acepta "/Archivos de proyecto" o "/Project Files")
+function normalizeRoot(seg) {
+  const s = (seg || '').trim().toLowerCase();
+  return (s === 'archivos de proyecto' || s === 'project files') ? 'Project Files' : seg;
+}
+
+// Busca/crea una carpeta por ruta absoluta bajo Project Files.
+// path p.ej: "/Project Files/09 SP" o "/Archivos de proyecto/09 SP"
+async function ensureFolderByPath(projectId, path) {
+  if (!path?.startsWith('/')) throw new Error('path debe empezar por "/"');
+
+  const parts = path.split('/').filter(Boolean);
+  if (!parts.length) throw new Error('path inválido');
+
+  // Aceptamos ambos idiomas para el primer segmento
+  parts[0] = normalizeRoot(parts[0]);
+
+  if (parts[0] !== 'Project Files') {
+    throw new Error('La ruta debe empezar por "/Project Files" (o "/Archivos de proyecto")');
+  }
+
+  let currentId = await getProjectFilesFolderId(projectId);
+  for (let i = 1; i < parts.length; i++) {
+    const name = parts[i];
+    // ¿existe ya?
+    const page = await listFolderContents(projectId, currentId, { all: true, limit: 200 });
+    const child = (page.data || []).find(d =>
+      d.type === 'folders' &&
+      ((d.attributes?.displayName || d.attributes?.name || '').trim().toLowerCase() === name.trim().toLowerCase())
+    );
+    if (child) {
+      currentId = child.id;
+    } else {
+      // crear
+      currentId = await ensureFolder(projectId, currentId, name);
+    }
+  }
+  return currentId; // folderId final
+}
+
 module.exports = {
   listHubs,
   listProjects,
@@ -190,5 +330,8 @@ module.exports = {
   findItemByName,
   createItem,
   createVersion,
-  parseStorageUrn
+  parseStorageUrn,
+  listProjectTree,
+  getProjectFilesFolderId,
+  ensureFolderByPath
 };

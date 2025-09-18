@@ -5,15 +5,15 @@
 @urlSP=/api/sp
 @urlBridge=/api/bridge
 @urlACC=/api/acc
-@DRIVE_ID=b!wCLoO5R470CbsFahzwmPA1nsRN_Yzj5Hl19_Us3vS4cjH0pJvN-0RYtKpZuFZ_W9
 
 ### TEMP VARIABLES ###
 @PROJECT_ID=b.76947f01-cc26-47db-9681-fff27e5430ce
-@FOLDER_ID=urn:adsk.wipprod:fs.folder:co.D7F4NTwdRqqYqMaK-M01Yw
+@FOLDER_ID=urn:adsk.wipprod:fs.folder:co._HMyOfTySzGn6hpRrYrdvA
+
 @HUB_ID=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
 
-@SP_DRIVE_ID=b!wCLoO5R470CbsFahzwmPA1nsRN_Yzj5Hl19_Us3vS4cjH0pJvN-0RYtKpZuFZ_W9
-@SP_ITEM_ID=01GXVT7VN6Y2GOVW7725BZO354PWSELRRZ
+@SP_DRIVE_ID=b!DQOmTDWg4UCWLUzjVxfVHsgBQQSZtqtIhu-TIGdbQBu81Wu7u7k0S6njwic8UIS3
+@SP_ITEM_ID=01KWI7RKN6Y2GOVW7725BZO354PWSELRRZ
 @NOMBRE_DESTINO_OPCIONAL=test
 
 ##############
@@ -30,20 +30,20 @@ GET {{host}}{{urlHealth}}
 GET {{host}}/api/sp/root
 
 ### 1) Listar raíz de la biblioteca
-GET {{host}}{{urlSP}}/list?driveId={{DRIVE_ID}}
+GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}
 
 ### 2) Busca el sitio (prueba con varias claves)
 GET {{host}}{{urlSP}}/find-sites?q=lban0x
 
 ### 3) Lista drives directamente por URL (sin siteId)
-GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/
+GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/sites/LBAN0X
 # o reemplaza con la webUrl exacta que te devolvió find-sites
 
 ### 4) (Opcional) Si quieres el siteId explícito
 GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/sites/lban0x
 
 ###
-GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=SP%20XXYYNN%20sencillo%2020240108
+GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=1_COMM
 
 
 ###########
@@ -51,10 +51,10 @@ GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=SP%20XXYYNN%20sencillo%2
 ###########
 
 ### 0.0) Limpiar Tokens
-GET {{host}}{{urlACC}}/auth/logout
+### GET {{host}}{{urlACC}}/auth/logout
 
 ### 0) Login con scopes de escritura (una sola vez por sesión)
-GET {{host}}{{urlACC}}/auth/login?scopes=data:read%20data:write%20data:create%20account:read%20viewables:read%20openid%20offline_access&prompt=login
+### GET {{host}}{{urlACC}}/auth/login?scopes=data:read%20data:write%20data:create%20account:read%20viewables:read%20openid%20offline_access&prompt=login
 
 ### 1) Hubs
 GET {{host}}{{urlACC}}/hubs
@@ -86,3 +86,23 @@ POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_IT
 
 ### 8) Ejecutar de verdad
 POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&mode=upsert&dryRun=false
+
+
+### 1) Dame el folderId de Project Files
+GET {{host}}/api/acc/folder-by-path?projectId={{PROJECT_ID}}&path=/Project%20Files
+
+### 2) Crea (si no existe) la carpeta "09 SP" bajo Project Files y devuelve su id
+GET {{host}}/api/acc/folder-by-path?projectId={{PROJECT_ID}}&path=/Project%20Files/09%20SP&create=true
+
+
+### Árbol completo del proyecto (solo carpetas)
+GET {{host}}/api/acc/tree?projectId={{PROJECT_ID}}
+
+### Árbol incluyendo ficheros (puede ser grande)
+GET {{host}}/api/acc/tree?projectId={{PROJECT_ID}}&includeItems=true
+
+### Limitar profundidad (p.ej. hasta 3 niveles)
+GET {{host}}/api/acc/tree?projectId={{PROJECT_ID}}&maxDepth=3
+
+
+### FolderID de la carpeta creada en projects Files : urn:adsk.wipprod:fs.folder:co.OTrCYRk0Rtetbr5nqktV2w

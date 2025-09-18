@@ -54,10 +54,13 @@ async function getAppAccessToken() {
     timeout: 15000
   });
   setToken(tok);
+  const payload = decodeJwt(tokenState.access_token);
+  console.log('[APS 2LO] scopes:', tokenState.scope, 'aud:', payload?.aud, 'exp:', payload?.exp);
   return tokenState.access_token;
 }
 
 // --- util: decodificar JWT (sin verificar, solo lectura) ---
+
 function decodeJwt(token) {
   try {
     const payload = token.split('.')[1];
@@ -66,38 +69,66 @@ function decodeJwt(token) {
 }
 
 // ---- API helpers (2LO) ----
+
+function logApsError(prefix, err) {
+  try {
+    const payload = err?.response?.data;
+    if (payload) {
+      console.error(`${prefix} APS error payload:`, JSON.stringify(payload, null, 2));
+    } else {
+      console.error(`${prefix} error:`, err?.message || err);
+    }
+  } catch (_) {}
+}
+
 async function apiGet(url, config = {}) {
   const access = await getAppAccessToken();
   const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
-  const { data, status } = await axios.get(full, {
-    ...config,
-    headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
-  });
-  if (status < 200 || status >= 300) throw new Error(`GET ${url} => ${status}`);
-  return data;
+  try {
+    const { data, status } = await axios.get(full, {
+      ...config,
+      headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+    });
+    if (status < 200 || status >= 300) throw new Error(`GET ${url} => ${status}`);
+    return data;
+  } catch (err) {
+    logApsError(`GET ${url}`, err);
+    throw err;
+  }
 }
 
 async function apiPost(url, body, config = {}) {
   const access = await getAppAccessToken();
   const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
-  const { data, status } = await axios.post(full, body, {
-    ...config,
-    headers: { 'Content-Type': 'application/json', ...(config.headers || {}), Authorization: `Bearer ${access}` }
-  });
-  if (status < 200 || status >= 300) throw new Error(`POST ${url} => ${status}`);
-  return data;
+  try {
+    const { data, status } = await axios.post(full, body, {
+      ...config,
+      headers: { 'Content-Type': 'application/json', ...(config.headers || {}), Authorization: `Bearer ${access}` }
+    });
+    if (status < 200 || status >= 300) throw new Error(`POST ${url} => ${status}`);
+    return data;
+  } catch (err) {
+    logApsError(`POST ${url}`, err);
+    throw err;
+  }
 }
 
 async function apiPut(url, body, config = {}) {
   const access = await getAppAccessToken();
   const full = url.startsWith('http') ? url : `${APS_BASE}${url}`;
-  const { data, status } = await axios.put(full, body, {
-    ...config,
-    headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
-  });
-  if (status < 200 || status >= 300) throw new Error(`PUT ${url} => ${status}`);
-  return data;
+  try {
+    const { data, status } = await axios.put(full, body, {
+      ...config,
+      headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+    });
+    if (status < 200 || status >= 300) throw new Error(`PUT ${url} => ${status}`);
+    return data;
+  } catch (err) {
+    logApsError(`PUT ${url}`, err);
+    throw err;
+  }
 }
+
 
 module.exports = {
   // 2LO only
