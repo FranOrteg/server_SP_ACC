@@ -74,12 +74,16 @@ async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryR
 async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, summary) {
   onLog(`📁 ensure folder: ${name} under ${parentFolderId}`);
   if (dryRun) return parentFolderId;
+
+  // comprobación rápida antes de crear
   const exists = await acc.findChildByName(projectId, parentFolderId, name);
   if (exists && exists.type === 'folders') return exists.id;
-  const id = await acc.ensureFolder(projectId, parentFolderId, name);
-  summary.foldersCreated++;
+
+  const { id, created } = await acc.ensureFolder(projectId, parentFolderId, name);
+  if (created) summary.foldersCreated++;
   return id;
 }
+
 
 async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRun, onLog, summary) {
   const fileName = spItem.name;

@@ -58,9 +58,13 @@ async function findChildByName(projectId, parentFolderId, name) {
 }
 
 async function ensureFolder(projectId, parentFolderId, name) {
+  // 1) ¿ya existe?
   const existing = await findChildByName(projectId, parentFolderId, name);
-  if (existing && existing.type === 'folders') return existing.id;
+  if (existing && existing.type === 'folders') {
+    return { id: existing.id, created: false };
+  }
 
+  // 2) intentar crear
   const body = {
     jsonapi: { version: '1.0' },
     data: {
@@ -74,8 +78,23 @@ async function ensureFolder(projectId, parentFolderId, name) {
       }
     }
   };
-  const created = await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/folders`, body);
-  return created.data?.id;
+
+  try {
+    const created = await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/folders`, body);
+    return { id: created.data?.id, created: true };
+  } catch (err) {
+    const status = err?.response?.status;
+    // 409 = la carpeta ya existe (p.ej. porque el primer intento 500 ya la creó y el retry choca)
+    if (status === 409) {
+      // pequeña espera por consistencia eventual y volvemos a mirar
+      await aps.sleep(600);
+      const again = await findChildByName(projectId, parentFolderId, name);
+      if (again && again.type === 'folders') {
+        return { id: again.id, created: false };
+      }
+    }
+    throw err;
+  }
 }
 
 // --- STORAGE + UPLOAD ---
@@ -342,9 +361,7 @@ async function ensureFolderByPath(projectId, path) {
   const parts = path.split('/').filter(Boolean);
   if (!parts.length) throw new Error('path inválido');
 
-  // Aceptamos ambos idiomas para el primer segmento
   parts[0] = normalizeRoot(parts[0]);
-
   if (parts[0] !== 'Project Files') {
     throw new Error('La ruta debe empezar por "/Project Files" (o "/Archivos de proyecto")');
   }
@@ -352,21 +369,24 @@ async function ensureFolderByPath(projectId, path) {
   let currentId = await getProjectFilesFolderId(projectId);
   for (let i = 1; i < parts.length; i++) {
     const name = parts[i];
+
     // ¿existe ya?
     const page = await listFolderContents(projectId, currentId, { all: true, limit: 200 });
     const child = (page.data || []).find(d =>
       d.type === 'folders' &&
       ((d.attributes?.displayName || d.attributes?.name || '').trim().toLowerCase() === name.trim().toLowerCase())
     );
+
     if (child) {
       currentId = child.id;
     } else {
-      // crear
-      currentId = await ensureFolder(projectId, currentId, name);
+      const { id: newId } = await ensureFolder(projectId, currentId, name);
+      currentId = newId;
     }
   }
   return currentId; // folderId final
 }
+
 
 // --- REGION + HUB UTILS ---
 async function getTopFoldersByProjectId(projectId) {
