@@ -44,21 +44,39 @@ async function copySpTreeToAcc({
   const started = Date.now();
   const summary = { foldersCreated: 0, filesUploaded: 0, versionsCreated: 0, skipped: 0, bytesUploaded: 0 };
 
+  // 1) metadatos y nombre del sitio
   const root = await sp.getItemMeta(driveId, itemId);
   if (!root) throw new Error(`SP item ${itemId} no encontrado`);
 
-  let destFolderId = targetFolderId;
+  const siteName = await sp.getSiteNameForItem(driveId, itemId); // ← **LBKN01**, por ejemplo
+  onLog(`📦 sitio SP: ${siteName}`);
+
+  // 2) carpeta del sitio (hermana de otros sitios) bajo la carpeta objetivo
+  const siteFolderId = await ensureAccFolder(projectId, targetFolderId, siteName, dryRun, onLog, summary);
+
+  // 3) decidir VOLCAT (contenido directo o subcarpeta)
   if (root.folder) {
-    const rootName = root.name || 'root';
-    destFolderId = await ensureAccFolder(projectId, targetFolderId, rootName, dryRun, onLog, summary);
-    await walkFolder(driveId, root, projectId, destFolderId, mode, dryRun, onLog, summary);
+    const treatAsRoot = sp.isDocLibRoot(root) || sp.isDriveRoot(root);
+    if (treatAsRoot) {
+      // Copiamos CONTENIDO de la biblioteca directamente dentro de <siteName>
+      onLog(`➡️  copiando contenido de la biblioteca → "${siteName}"`);
+      await walkFolder(driveId, root, projectId, siteFolderId, mode, dryRun, onLog, summary);
+    } else {
+      // Es una subcarpeta concreta: creamos (o usamos) ese subfolder DENTRO del sitio
+      const subId = await ensureAccFolder(projectId, siteFolderId, root.name, dryRun, onLog, summary);
+      onLog(`➡️  copiando carpeta "${root.name}" dentro de "${siteName}"`);
+      await walkFolder(driveId, root, projectId, subId, mode, dryRun, onLog, summary);
+    }
   } else {
-    await copyOneFile(driveId, root, projectId, targetFolderId, mode, dryRun, onLog, summary);
+    // Un archivo suelto: lo ponemos en la carpeta del sitio
+    onLog(`➡️  copiando archivo "${root.name}" dentro de "${siteName}"`);
+    await copyOneFile(driveId, root, projectId, siteFolderId, mode, dryRun, onLog, summary);
   }
 
   return { ok: true, summary, tookMs: Date.now() - started };
 }
 
+// BFS recursivo con tolerancia a fallos (reinstala la función que faltaba)
 async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryRun, onLog, summary) {
   const children = await sp.listChildrenByItem(driveId, spFolder.id);
   for (const child of children) {
@@ -78,6 +96,7 @@ async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryR
   }
 }
 
+
 async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, summary) {
   onLog(`📁 ensure folder: ${name} under ${parentFolderId}`);
   if (dryRun) return parentFolderId;
@@ -90,7 +109,6 @@ async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, s
   if (created) summary.foldersCreated++;
   return id;
 }
-
 
 async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRun, onLog, summary) {
   const fileName = spItem.name;
