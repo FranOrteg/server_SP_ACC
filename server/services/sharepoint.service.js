@@ -4,6 +4,19 @@ const { pipeline } = require('node:stream/promises');
 const fs = require('fs');
 const path = require('path');
 
+// util local
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/**
+ * Descarga un driveItem a /tmp usando Graph -> sigue redirect a SharePoint.
+ * Reintenta en transitorios: 429/500/502/503/504 o errores de red.
+ *
+ * @param {string} driveId
+ * @param {string} itemId
+ * @param {{maxAttempts?:number, baseBackoffMs?:number}} opts
+ * @returns {Promise<string>} ruta absoluta del fichero temporal
+ */
+
 /* ----------------------------- helpers sitio ----------------------------- */
 
 async function getRootSite() {
@@ -166,12 +179,61 @@ function isDriveRoot(item) {
 
 /* --------------------------- descarga / upload SP -------------------------- */
 
-async function downloadItemToTmp(driveId, itemId) {
-  const res = await graphGetStream(`/drives/${driveId}/items/${itemId}/content`);
-  const tmpFile = path.join('/tmp', `${itemId}-${Date.now()}`);
-  await pipeline(res.data, fs.createWriteStream(tmpFile));
-  return tmpFile;
+async function downloadItemToTmp(driveId, itemId, opts = {}) {
+  const maxAttempts   = opts.maxAttempts   ?? 6;
+  const baseBackoffMs = opts.baseBackoffMs ?? 1000;
+
+  // un nombre de fichero temporal por ejecución
+  const tmpPath = `/tmp/${itemId}-${Date.now()}`;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let writeStream;
+    try {
+      // Usamos SIEMPRE graphGetStream, que ya añade el bearer y sigue el 302 de Graph -> SharePoint
+      const url = `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`;
+
+      // graphGetStream puede devolver:
+      //  - un objeto axios { data: ReadableStream }
+      //  - directamente un ReadableStream
+      const resp = await graphGetStream(url);
+      const readable = resp?.data && typeof resp.data.pipe === 'function' ? resp.data : resp;
+
+      writeStream = fs.createWriteStream(tmpPath);
+      await pipeline(readable, writeStream);
+
+      return tmpPath; // ✅ OK
+    } catch (err) {
+      // limpiar parcial si algo falló
+      try { writeStream?.destroy(); } catch {}
+      try { fs.existsSync(tmpPath) && fs.unlinkSync(tmpPath); } catch {}
+
+      const status = err?.response?.status;
+      const isRetryable = !status || [429, 500, 502, 503, 504].includes(status);
+
+      if (!isRetryable || attempt === maxAttempts) {
+        console.error(`[SP][download] fallo definitivo ${driveId}/${itemId} ->`, status || err.code || err.message);
+        throw err;
+      }
+
+      // respetar Retry-After si viene (segundos)
+      const ra = err?.response?.headers?.['retry-after'];
+      const retryAfterMs = ra ? Number(ra) * 1000 : null;
+
+      // backoff exponencial + jitter, cap a 60s
+      const backoff = retryAfterMs ?? Math.min(
+        60_000,
+        baseBackoffMs * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 300)
+      );
+
+      console.warn(
+        `[SP][download][retry] ${driveId}/${itemId} intento ${attempt}/${maxAttempts} -> ` +
+        `${status || err.code || err.message}; esperando ${backoff}ms`
+      );
+      await sleep(backoff);
+    }
+  }
 }
+
 
 async function createUploadSession(driveId, parentItemIdOrRoot, fileName) {
   const url = parentItemIdOrRoot === 'root'

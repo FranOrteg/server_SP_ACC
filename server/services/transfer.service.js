@@ -66,7 +66,14 @@ async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryR
       const subId = await ensureAccFolder(projectId, destFolderId, child.name, dryRun, onLog, summary);
       await walkFolder(driveId, child, projectId, subId, mode, dryRun, onLog, summary);
     } else {
-      await copyOneFile(driveId, child, projectId, destFolderId, mode, dryRun, onLog, summary);
+      try {
+        await copyOneFile(driveId, child, projectId, destFolderId, mode, dryRun, onLog, summary);
+      } catch (e) {
+        summary.errors = (summary.errors || 0) + 1;
+        summary.failedFiles = summary.failedFiles || [];
+        summary.failedFiles.push({ name: child.name, id: child.id, reason: e?.response?.status || e.message });
+        onLog(`❌ fallo en ${child.name} (${child.id}) -> ${e?.response?.status || e.message}. Continuo…`);
+      }
     }
   }
 }
