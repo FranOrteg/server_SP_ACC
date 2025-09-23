@@ -12,4 +12,7 @@ router.use('/acc', require('./api/acc'));
 // Bridge
 router.use('/bridge', require('./api/bridge'));
 
+// Auditoria
+router.use('/audit', require('./api/audit'));
+
 module.exports = router;
