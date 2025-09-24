@@ -1,0 +1,3 @@
+path,state,src_size,src_hash,src_mtime,dst_size,dst_hash,dst_mtime,action,notes
+"/Project Files/LBAN0X/1_COMM/FLOREN.jpg","OK","246042","","2025-09-17T09:26:38Z","246042","","2025-09-24T09:19:04.0000000Z","UPLOAD","mtime drift 604346s (SP=2025-09-17T09:26:38Z vs ACC=2025-09-24T09:19:04.0000000Z)"
+"/Project Files/LBAN0X/10_SUMMARY/FIGO.jpg","OK","788613","","2025-09-17T09:25:47Z","788613","","2025-09-24T09:19:13.0000000Z","UPLOAD","mtime drift 604406s (SP=2025-09-17T09:25:47Z vs ACC=2025-09-24T09:19:13.0000000Z)"

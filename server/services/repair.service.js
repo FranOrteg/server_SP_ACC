@@ -54,14 +54,18 @@ async function uploadToAcc(projectId, folderId, fileName, localFile) {
   else await acc.createVersion(projectId, existing.id, fileName, storageUrn);
 }
 
-async function repairFromReport(reportId, { siteId, projectId, includeStates = ['MISSING_IN_ACC','SIZE_MISMATCH','HASH_MISMATCH'], maxConcurrency = 4 } = {}) {
+async function repairFromReport(reportId, { siteId, projectId, includeStates = ['MISSING_IN_ACC','SIZE_MISMATCH','HASH_MISMATCH'], maxConcurrency = 4, driveId } = {}) {
   const rep = getReport(reportId);
   if (!rep) throw new Error(`reportId ${reportId} no encontrado`);
 
-  // necesitamos el driveId por defecto del sitio para descargar por itemId
-  const { data: drive } = await graphGet(`/sites/${encodeURIComponent(siteId)}/drive?$select=id`);
-  const driveId = drive?.id;
-  if (!driveId) throw new Error(`No se encontró drive por defecto para siteId=${siteId}`);
+  // driveId preferente (del body); si no, usa el del report; si no, el default del site.
+  let useDriveId = driveId || rep?.source?.driveId || null;
+  if (!useDriveId) {
+    if (!siteId) throw new Error('Para reparar sin driveId en el reporte, pasa siteId y usaré su drive por defecto');
+    const { data: drive } = await graphGet(`/sites/${encodeURIComponent(siteId)}/drive?$select=id`);
+    useDriveId = drive?.id;
+  }
+  if (!useDriveId) throw new Error('No pude resolver driveId');
 
   const targets = rep.items.filter(i => includeStates.includes(i.state));
   let idx = 0, ok = 0, fail = 0;
@@ -75,7 +79,7 @@ async function repairFromReport(reportId, { siteId, projectId, includeStates = [
       try {
         const { folderPath, fileName } = splitPath(it.path);
         const folderId = await acc.ensureFolderByPath(projectId, folderPath);
-        const tmp = await downloadSpItem(driveId, it.src.id);
+        const tmp = await downloadSpItem(useDriveId, it.src.id);
         await uploadToAcc(projectId, folderId, fileName, tmp);
         try { fs.unlinkSync(tmp); } catch (_) {}
         ok++;

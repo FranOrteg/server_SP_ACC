@@ -1,0 +1,74 @@
+{
+  "reportId": "rep_20250924T101403_xv91",
+  "migrationId": null,
+  "source": {
+    "type": "sharepoint",
+    "driveId": "b!DQOmTDWg4UCWLUzjVxfVHsgBQQSZtqtIhu-TIGdbQBu81Wu7u7k0S6njwic8UIS3",
+    "itemId": "01KWI7RKN6Y2GOVW7725BZO354PWSELRRZ"
+  },
+  "target": {
+    "type": "acc",
+    "projectId": "b.76947f01-cc26-47db-9681-fff27e5430ce",
+    "accFolderId": "urn:adsk.wipprod:fs.folder:co._HMyOfTySzGn6hpRrYrdvA"
+  },
+  "params": {
+    "dryRun": true,
+    "since": "2025-09-01T00:00:00Z",
+    "hashPolicy": "auto",
+    "mtimePolicy": "ignore",
+    "mtimeSkewSec": 120,
+    "versionPolicy": "skipIfSameHash"
+  },
+  "startedAt": "2025-09-24T10:14:03.945Z",
+  "finishedAt": "2025-09-24T10:14:24.131Z",
+  "summary": {
+    "scanned": 2,
+    "ok": 2,
+    "missingInACC": 0,
+    "sizeMismatch": 0,
+    "hashMismatch": 0,
+    "mtimeDrift": 0,
+    "failures": 0,
+    "bytesSource": 1034655,
+    "bytesTarget": 0,
+    "tookMs": 20186
+  },
+  "items": [
+    {
+      "path": "/Project Files/LBAN0X/1_COMM/FLOREN.jpg",
+      "src": {
+        "size": 246042,
+        "hash": null,
+        "mtime": "2025-09-17T09:26:38Z",
+        "id": "01KWI7RKLPNMDNVXXR5VHYJJLTIRP23U5C"
+      },
+      "dst": {
+        "size": 246042,
+        "hash": null,
+        "mtime": "2025-09-24T09:19:04.0000000Z",
+        "urn": "urn:adsk.wipprod:dm.lineage:k3DEQCXUQ2qrlZo_Exl5Dw"
+      },
+      "state": "OK",
+      "action": "UPLOAD",
+      "notes": "mtime drift 604346s (SP=2025-09-17T09:26:38Z vs ACC=2025-09-24T09:19:04.0000000Z)"
+    },
+    {
+      "path": "/Project Files/LBAN0X/10_SUMMARY/FIGO.jpg",
+      "src": {
+        "size": 788613,
+        "hash": null,
+        "mtime": "2025-09-17T09:25:47Z",
+        "id": "01KWI7RKLOX6G2ERA3MZFLWOUINH5LMD2D"
+      },
+      "dst": {
+        "size": 788613,
+        "hash": null,
+        "mtime": "2025-09-24T09:19:13.0000000Z",
+        "urn": "urn:adsk.wipprod:dm.lineage:o4A2m3LWQ6OYblPDO2arlQ"
+      },
+      "state": "OK",
+      "action": "UPLOAD",
+      "notes": "mtime drift 604406s (SP=2025-09-17T09:25:47Z vs ACC=2025-09-24T09:19:13.0000000Z)"
+    }
+  ]
+}

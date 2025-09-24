@@ -16,6 +16,12 @@
 @SP_ITEM_ID=01KWI7RKN6Y2GOVW7725BZO354PWSELRRZ
 @NOMBRE_DESTINO_OPCIONAL=test
 
+### VARS AUDIT ###
+@urlAUDIT=/api/audit
+@SITE_ID=                             
+@AUDIT_REPORT_ID=
+
+
 ##############
 ### HEALTH ###
 ##############
@@ -112,3 +118,36 @@ GET {{host}}{{urlACC}}/project-info?projectId={{PROJECT_ID}}
 
 ### Obtener FolderID por path
 GET {{host}}{{urlACC}}/folderByPath?projectId={{PROJECT_ID}}&path=/Project%20Files/root/1_COMM&create=false
+
+
+#############
+### Audit ###
+#############
+
+### AUDIT 1a: ignorar drift de tiempo por completo (no notas)
+GET {{host}}{{urlAUDIT}}/sp-to-acc?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{FOLDER_ID}}&since=2025-09-01T00:00:00Z&mtimePolicy=ignore
+
+### AUDIT 1b: drift estricto (cuenta como discrepancia si supera 2 minutos)
+GET {{host}}{{urlAUDIT}}/sp-to-acc?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{FOLDER_ID}}&since=2025-09-01T00:00:00Z&mtimePolicy=strict&mtimeSkewSec=120
+
+
+### AUDIT 2: obtener el reporte por id
+GET {{host}}{{urlAUDIT}}/report/{{AUDIT_REPORT_ID}}
+
+### AUDIT 3: descargar el CSV
+GET {{host}}{{urlAUDIT}}/report/{{AUDIT_REPORT_ID}}/csv
+
+### AUDIT 4: reparar difs (missing/size/hash)
+POST {{host}}{{urlAUDIT}}/sp-to-acc/repair
+Content-Type: application/json
+
+{
+  "reportId": "{{AUDIT_REPORT_ID}}",
+  "projectId": "{{PROJECT_ID}}",
+  "driveId": "{{SP_DRIVE_ID}}",
+  "includeStates": ["MISSING_IN_ACC","SIZE_MISMATCH","HASH_MISMATCH"],
+  "maxConcurrency": 4
+}
+
+### AUDIT 5: sitio completo (usa siteId)
+GET {{host}}{{urlAUDIT}}/sp-to-acc?siteId={{SITE_ID}}&projectId={{PROJECT_ID}}&since=2025-09-01T00:00:00Z
