@@ -5,6 +5,7 @@
 @urlSP=/api/sp
 @urlBridge=/api/bridge
 @urlACC=/api/acc
+@urlAdmin=/api/admin
 
 ### TEMP VARIABLES ###
 @PROJECT_ID=b.76947f01-cc26-47db-9681-fff27e5430ce
@@ -161,3 +162,47 @@ GET {{host}}{{urlAUDIT}}/report/{{AUDIT_REPORT_ID}}/re-audit
 ### SYNC (segmento SP -> ACC): audita + repara
 POST {{host}}{{urlBridge}}/sync-sp-segment?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{FOLDER_ID}}&since=2025-09-01T00:00:00Z&hashPolicy=auto&mtimePolicy=ignore&mtimeSkewSec=120&withMeta=true&maxConcurrency=4
 
+#############
+### ADMIN ###
+#############
+
+### ADMIN: ver plantilla
+GET {{host}}{{urlAdmin}}/templates/labit-standard-v1
+
+### ADMIN: aplicar plantilla a ACC (proyecto ya existente)
+POST {{host}}{{urlAdmin}}/apply/acc
+Content-Type: application/json
+
+{
+  "projectId": "{{PROJECT_ID}}",
+  "templateId": "labit-standard-v1",
+  "vars": { "code": "001", "name": "Demo" }
+}
+
+### ADMIN: aplicar plantilla a SP (sitio ya existente)
+POST {{host}}{{urlAdmin}}/apply/sp
+Content-Type: application/json
+
+{
+  "siteUrl": "https://labitgroup.sharepoint.com/sites/LBAN0X",
+  "templateId": "labit-standard-v1",
+  "vars": { "code": "001", "name": "Demo" }
+}
+
+### ADMIN: crear/enlazar “twin” (aplica en ambos y guarda el link)
+POST {{host}}{{urlAdmin}}/twin/apply
+Content-Type: application/json
+
+{
+  "projectId": "{{PROJECT_ID}}",
+  "siteUrl": "https://labitgroup.sharepoint.com/sites/LBAN0X",
+  "templateId": "labit-standard-v1",
+  "vars": { "code": "001", "name": "Demo" },
+  "twinId": "PRJ-001-DEMO"
+}
+
+### ADMIN: estado del twin
+GET {{host}}{{urlAdmin}}/twin/PRJ-001-DEMO/status
+
+### ADMIN: listar twins
+GET {{host}}{{urlAdmin}}/twin

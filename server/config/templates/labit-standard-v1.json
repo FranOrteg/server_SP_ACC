@@ -1,0 +1,15 @@
+{
+  "templateId": "labit-standard-v1",
+  "namePattern": "PRJ-{code}-{name}",
+  "folders": [
+    "1_COMM",
+    "2_DESIGN/IFC",
+    "3_MODELS/RVT",
+    "4_DOCS/Plans"
+  ],
+  "permissions": [
+    { "group": "Arquitectos", "role": "Editor" },
+    { "group": "Clientes",   "role": "Lector" }
+  ],
+  "tags": ["Skylab"]
+}

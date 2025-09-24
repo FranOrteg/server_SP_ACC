@@ -15,4 +15,8 @@ router.use('/bridge', require('./api/bridge'));
 // Auditoria
 router.use('/audit', require('./api/audit'));
 
+// Admin
+router.use('/admin', require('./api/admin'));
+
+
 module.exports = router;
