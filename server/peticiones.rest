@@ -19,7 +19,7 @@
 ### VARS AUDIT ###
 @urlAUDIT=/api/audit
 @SITE_ID=                             
-@AUDIT_REPORT_ID=
+@AUDIT_REPORT_ID=rep_20250924T112457_w5du
 
 
 ##############
@@ -151,3 +151,13 @@ Content-Type: application/json
 
 ### AUDIT 5: sitio completo (usa siteId)
 GET {{host}}{{urlAUDIT}}/sp-to-acc?siteId={{SITE_ID}}&projectId={{PROJECT_ID}}&since=2025-09-01T00:00:00Z
+
+### AUDIT (listar últimos 50)
+GET {{host}}{{urlAUDIT}}/reports
+
+### Re-audit del report anterior
+GET {{host}}{{urlAUDIT}}/report/{{AUDIT_REPORT_ID}}/re-audit
+
+### SYNC (segmento SP -> ACC): audita + repara
+POST {{host}}{{urlBridge}}/sync-sp-segment?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{FOLDER_ID}}&since=2025-09-01T00:00:00Z&hashPolicy=auto&mtimePolicy=ignore&mtimeSkewSec=120&withMeta=true&maxConcurrency=4
+

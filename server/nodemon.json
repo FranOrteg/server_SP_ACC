@@ -1,0 +1,5 @@
+{
+  "watch": ["src", "routes", "controllers", "services"],
+  "ext": "js,json",
+  "ignore": ["data/reports/**/*", "tmp/**/*", "logs/**/*"]
+}
