@@ -1,43 +1,38 @@
 // services/admin.template.service.js
-
 const fs = require('fs');
 const path = require('path');
 
-let yaml;
-try { yaml = require('js-yaml'); } catch { /* opcional */ }
-
 const TPL_DIR = path.join(__dirname, '..', 'config', 'templates');
 
-function tryParse(filePath) {
-  const raw = fs.readFileSync(filePath, 'utf8');
-  if (filePath.endsWith('.json')) return JSON.parse(raw);
-  if (filePath.endsWith('.yml') || filePath.endsWith('.yaml')) {
-    if (!yaml) throw new Error('Instala js-yaml para usar plantillas YAML');
-    return yaml.load(raw);
-  }
-  throw new Error('Formato de plantilla no soportado');
-}
-
+// Carga JSON: config/templates/<templateId>.json
 async function loadTemplate(templateId) {
-  const bases = [
-    path.join(TPL_DIR, `${templateId}.json`),
-    path.join(TPL_DIR, `${templateId}.yaml`),
-    path.join(TPL_DIR, `${templateId}.yml`)
-  ];
-  const file = bases.find(f => fs.existsSync(f));
-  if (!file) return null;
-  const tpl = tryParse(file);
-  // normaliza
-  tpl.templateId = tpl.templateId || templateId;
-  tpl.folders = Array.isArray(tpl.folders) ? tpl.folders : [];
-  tpl.permissions = Array.isArray(tpl.permissions) ? tpl.permissions : [];
-  tpl.tags = Array.isArray(tpl.tags) ? tpl.tags : [];
-  return tpl;
+  if (!templateId) return null;
+  const file = path.join(TPL_DIR, `${templateId}.json`);
+  if (!fs.existsSync(file)) return null;
+  const raw = fs.readFileSync(file, 'utf8');
+  return JSON.parse(raw);
 }
 
+// Expande "PRJ-{code}-{name}"
+function expandOne(s, vars = {}) {
+  return String(s || '').replace(/\{(\w+)\}/g, (_, k) => (vars[k] ?? ''));
+}
+
+// Expande namePattern y devuelve un string “bonito”
 function expandName(tpl, vars = {}) {
-  const pat = tpl.namePattern || '{name}';
-  return pat.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? String(vars[k]) : ''));
+  const pat = tpl?.namePattern || '{name}';
+  return expandOne(pat, vars).replace(/\s+/g, ' ').trim();
 }
 
-module.exports = { loadTemplate, expandName };
+// Devuelve la lista de carpetas expandida (respetando subniveles "a/b/c")
+function expandFolders(tpl, vars = {}) {
+  const list = Array.isArray(tpl?.folders) ? tpl.folders : [];
+  return list.map(f => f.split('/').map(seg => expandOne(seg, vars)).join('/'));
+}
+
+// (Opcional) permisos tal cual están en la plantilla
+function getPermissions(tpl) {
+  return Array.isArray(tpl?.permissions) ? tpl.permissions : [];
+}
+
+module.exports = { loadTemplate, expandName, expandFolders, getPermissions };

@@ -1,83 +1,73 @@
 // services/admin.twin.service.js
-
 const fs = require('fs');
 const path = require('path');
 const acc = require('./acc.service');
-const sp  = require('./sharepoint.service');
-const { listAccSubtreeFlat } = require('./acc.inventory');
-const templates = require('./admin.template.service');
+const sp = require('./sharepoint.service');
 
-const DATA_DIR = path.join(__dirname, '..', 'data', 'twins');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const LINKS = path.join(DATA_DIR, 'links.json');
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const FILE = path.join(DATA_DIR, 'twins.json');
 
-function readLinks() {
-  if (!fs.existsSync(LINKS)) return { links: [] };
-  return JSON.parse(fs.readFileSync(LINKS, 'utf8'));
+function ensureStore() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(FILE)) fs.writeFileSync(FILE, JSON.stringify({ list: [] }, null, 2));
 }
-function writeLinks(obj) {
-  fs.writeFileSync(LINKS, JSON.stringify(obj, null, 2));
-}
+function load() { ensureStore(); return JSON.parse(fs.readFileSync(FILE, 'utf8')); }
+function save(db) { fs.writeFileSync(FILE, JSON.stringify(db, null, 2)); }
 
 async function saveLink({ twinId, projectId, siteId, templateId, vars }) {
-  const db = readLinks();
-  const existing = db.links.find(l => l.twinId === twinId);
-  const rec = { twinId, projectId, siteId, templateId, vars, createdAt: new Date().toISOString() };
-  if (existing) Object.assign(existing, rec);
-  else db.links.push(rec);
-  writeLinks(db);
+  const db = load();
+  const now = new Date().toISOString();
+  const rec = { twinId, acc: { projectId }, sp: { siteId }, templateId, vars, createdAt: now, updatedAt: now };
+  const i = db.list.findIndex(x => x.twinId === twinId);
+  if (i >= 0) db.list[i] = { ...db.list[i], ...rec, updatedAt: now }; else db.list.push(rec);
+  save(db);
   return rec;
 }
 
-async function listLinks() {
-  const db = readLinks();
-  return db.links;
-}
-
 async function getStatus(twinId) {
-  const db = readLinks();
-  const link = db.links.find(l => l.twinId === twinId);
-  if (!link) return null;
+  const db = load();
+  const tw = db.list.find(x => x.twinId === twinId);
+  if (!tw) return null;
 
-  const tpl = await templates.loadTemplate(link.templateId);
-  if (!tpl) return { twinId, status: 'template-not-found' };
-
-  // ACC: comprobamos existencia de rutas declaradas
-  const accRoot = '/Project Files';
-  const neededAcc = tpl.folders.map(f => `${accRoot}/${f}`);
-  const accTree = await listAccSubtreeFlat(link.projectId, await acc.ensureFolderByPath(link.projectId, accRoot), { startPath: accRoot, withMeta: false });
-  const accPaths = new Set(accTree.map(x => x.path.replace(/\/+$/, '')));
-  const accMissing = neededAcc.filter(p => !accPaths.has(p));
-
-  // SP: idem en drive root del sitio
-  const site = await sp.resolveSiteIdFlexible({ url: undefined, hostname: undefined, path: undefined, /* usamos helpers abajo */ });
-  // usamos helper de sp.service para encontrar driveId
-  const { data: drv } = await sp.graphGet(`/sites/${encodeURIComponent(link.siteId)}/drive?$select=id`).catch(() => ({ data: {} }));
-  const driveId = drv?.id;
-  const spMissing = [];
-  if (driveId) {
-    // comprobamos cada folder
-    for (const f of tpl.folders) {
-      try {
-        await sp.getItemByPath(driveId, f);
-      } catch {
-        spMissing.push('/' + f.replace(/^\/+/, ''));
-      }
-    }
-  } else {
-    spMissing.push('__drive__');
+  // ACC
+  let accOk = false, accName = null, accErr = null;
+  try {
+    const info = await acc.getProjectInfo(tw.acc.projectId);
+    accOk = !!info;
+    accName = info?.data?.attributes?.name || null;
+  } catch (e) {
+    accErr = e?.response?.status || e.message;
   }
 
-  const ok = accMissing.length === 0 && spMissing.length === 0;
+  // SP
+  let spOk = false, spName = null, spErr = null, webUrl = null;
+  try {
+    const site = await sp.getRootSite(); // o resolve por tw.sp.siteId si lo quieres exacto
+    // Mejor: leer concretamente ese siteId:
+    const name = await (async () => {
+      try { return await sp.getSiteDisplayNameById(tw.sp.siteId); } catch { return null; }
+    })();
+    spOk = !!(tw.sp.siteId);
+    spName = name;
+    webUrl = null; // si quieres, pide /sites/{id}?$select=webUrl
+  } catch (e) {
+    spErr = e?.response?.status || e.message;
+  }
+
+  const status = (accOk && spOk) ? 'green' : ((accOk || spOk) ? 'amber' : 'red');
   return {
     twinId,
-    projectId: link.projectId,
-    siteId: link.siteId,
-    templateId: link.templateId,
-    ok,
-    accMissing,
-    spMissing
+    status,
+    acc: { ok: accOk, projectId: tw.acc.projectId, name: accName, error: accErr || null },
+    sp:  { ok: spOk, siteId: tw.sp.siteId, displayName: spName, webUrl, error: spErr || null },
+    templateId: tw.templateId || null,
+    vars: tw.vars || {}
   };
 }
 
-module.exports = { saveLink, listLinks, getStatus };
+async function listLinks() {
+  const db = load();
+  return { total: db.list.length, list: db.list };
+}
+
+module.exports = { saveLink, getStatus, listLinks };

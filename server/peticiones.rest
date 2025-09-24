@@ -166,11 +166,11 @@ POST {{host}}{{urlBridge}}/sync-sp-segment?projectId={{PROJECT_ID}}&driveId={{SP
 ### ADMIN ###
 #############
 
-### ADMIN: ver plantilla
-GET {{host}}{{urlAdmin}}/templates/labit-standard-v1
+### Ver plantilla (asegúrate del nombre del archivo)
+GET {{host}}/api/admin/templates/labit-standard-v1
 
-### ADMIN: aplicar plantilla a ACC (proyecto ya existente)
-POST {{host}}{{urlAdmin}}/apply/acc
+### Aplicar solo en ACC (proyecto ya existe)
+POST {{host}}/api/admin/apply/acc
 Content-Type: application/json
 
 {
@@ -179,8 +179,8 @@ Content-Type: application/json
   "vars": { "code": "001", "name": "Demo" }
 }
 
-### ADMIN: aplicar plantilla a SP (sitio ya existente)
-POST {{host}}{{urlAdmin}}/apply/sp
+### Aplicar solo en SP (sitio ya existe)
+POST {{host}}/api/admin/apply/sp
 Content-Type: application/json
 
 {
@@ -189,20 +189,20 @@ Content-Type: application/json
   "vars": { "code": "001", "name": "Demo" }
 }
 
-### ADMIN: crear/enlazar “twin” (aplica en ambos y guarda el link)
-POST {{host}}{{urlAdmin}}/twin/apply
+### Crear/enlazar twin (aplica en ambos y guarda el vínculo)
+POST {{host}}/api/admin/twin/apply
 Content-Type: application/json
 
 {
+  "twinId": "PRJ-001-DEMO",
   "projectId": "{{PROJECT_ID}}",
   "siteUrl": "https://labitgroup.sharepoint.com/sites/LBAN0X",
   "templateId": "labit-standard-v1",
-  "vars": { "code": "001", "name": "Demo" },
-  "twinId": "PRJ-001-DEMO"
+  "vars": { "code": "001", "name": "Demo" }
 }
 
-### ADMIN: estado del twin
-GET {{host}}{{urlAdmin}}/twin/PRJ-001-DEMO/status
+### Estado del twin
+GET {{host}}/api/admin/twin/PRJ-001-DEMO/status
 
-### ADMIN: listar twins
-GET {{host}}{{urlAdmin}}/twin
+### Listar twins guardados
+GET {{host}}/api/admin/twin
