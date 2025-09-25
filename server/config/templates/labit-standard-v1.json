@@ -2,10 +2,10 @@
   "templateId": "labit-standard-v1",
   "namePattern": "PRJ-{code}-{name}",
   "folders": [
-    "1_COMM",
-    "2_DESIGN/IFC",
-    "3_MODELS/RVT",
-    "4_DOCS/Plans"
+    "1_COMMATOSO",
+    "2_DESIGNERRRRRRRR/IFC",
+    "3_MODELSUPERRR/RVT",
+    "4_DOCSCUMENTSSSS/Plans"
   ],
   "permissions": [
     { "group": "Arquitectos", "role": "Editor" },

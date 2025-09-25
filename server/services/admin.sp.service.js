@@ -2,6 +2,7 @@
 const { graphGet, graphPost } = require('../clients/graphClient');
 const sp = require('./sharepoint.service');
 const { expandFolders, getPermissions } = require('./admin.template.service');
+const { spoAdminPost } = require('../clients/spoClient');
 
 async function getDefaultDriveId(siteId) {
   // /sites/{siteId}/drive → default doc library
@@ -89,4 +90,36 @@ async function applyTemplateToSite({ siteId, siteUrl, template, resolvedName }) 
   };
 }
 
-module.exports = { applyTemplateToSite };
+// Creación de site (spoAdmin)
+async function createSite({ type = 'CommunicationSite', title, url, description = '', lcid = 1033, classification = '' }) {
+  if (!url) throw new Error('url es obligatorio (https://<tenant>.sharepoint.com/sites/<algo>)');
+
+  // SPO Admin API: /_api/SPSiteManager/create
+  const payload = {
+    request: {
+      Title: title,
+      Url: url,
+      Lcid: lcid,
+      ShareByEmailEnabled: false,
+      Classification: classification || null,
+      // Nota: WebTemplate define la “plantilla base”.
+      // CommunicationSite: SITEPAGEPUBLISHING#0, TeamSite: STS#3 (moderno).
+      WebTemplate: (type === 'TeamSite') ? 'STS#3' : 'SITEPAGEPUBLISHING#0',
+      Description: description
+      // SiteDesignId: '00000000-0000-0000-0000-000000000000' // opcional si tienes Site Design
+    }
+  };
+
+  const { data } = await spoAdminPost('/_api/SPSiteManager/create', payload);
+  if (data?.ErrorMessage) throw new Error(`SPO create error: ${data.ErrorMessage}`);
+
+  // data contiene Url y SiteId (GUID)
+  return { siteId: data?.SiteId, siteUrl: data?.Url, status: data?.SiteStatus };
+}
+
+module.exports = {
+  applyTemplateToSite,
+  createSite,
+  applyTemplateToSite: require('./admin.sp.service').applyTemplateToSite ?? (async () => { throw new Error('applyTemplateToSite no implementado aquí'); })
+
+};

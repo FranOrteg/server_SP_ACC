@@ -21,4 +21,9 @@ router.get('/twin/:id/status', ctrl.twinStatus);
 // Listar vínculos guardados
 router.get('/twin', ctrl.listTwins);
 
+// Creación desde cero
+router.post('/acc/projects/create', ctrl.createAccProject);
+router.post('/sp/sites/create', ctrl.createSpSite);
+router.post('/twin/create', ctrl.createTwin);
+
 module.exports = router;

@@ -22,6 +22,8 @@
 @SITE_ID=                             
 @AUDIT_REPORT_ID=rep_20250924T112457_w5du
 
+@SPO_TENANT_HOST=labitgroup.sharepoint.com
+
 
 ##############
 ### HEALTH ###
@@ -206,3 +208,48 @@ GET {{host}}/api/admin/twin/PRJ-001-DEMO/status
 
 ### Listar twins guardados
 GET {{host}}/api/admin/twin
+
+###############################
+###############################
+###############################
+##### CREACIÓN DESDE CERO #####
+###############################
+###############################
+###############################
+
+### Crear proyecto ACC desde cero + aplicar plantilla
+POST {{host}}/api/admin/acc/projects/create
+Content-Type: application/json
+
+{
+  "hubId": "{{HUB_ID}}",
+  "templateId": "labit-standard-v1",
+  "vars": { "code": "001", "name": "Demo" }
+}
+
+### Crear sitio SP desde cero + aplicar plantilla
+POST {{host}}/api/admin/sp/sites/create
+Content-Type: application/json
+
+{
+  "templateId": "labit-standard-v1",
+  "vars": { "code": "001", "name": "Demo" },
+  "type": "CommunicationSite",
+  "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-001-DEMO"
+}
+
+### Crear TWIN (ACC+SP) + aplicar + guardar vínculo
+POST {{host}}/api/admin/twin/create
+Content-Type: application/json
+
+{
+  "hubId": "{{HUB_ID}}",
+  "templateId": "labit-standard-v1",
+  "vars": { "code": "001", "name": "Demo" },
+  "sp": {
+    "type": "CommunicationSite",
+    "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-001-DEMO"
+  },
+  "twinId": "PRJ-001-DEMO"
+}
+
