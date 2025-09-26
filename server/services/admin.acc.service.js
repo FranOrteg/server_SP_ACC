@@ -1,6 +1,6 @@
 // services/admin.acc.service.js
 const acc = require('./acc.service');
-const aps = require('../clients/apsClient');
+const aps = require('../clients/apsUserClient');
 const { expandFolders, getPermissions } = require('./admin.template.service');
 
 // Normaliza la respuesta de ensureFolderByPath a { id, created }
@@ -56,34 +56,30 @@ async function applyTemplateToProject({ projectId, template, resolvedName }) {
   };
 }
 
-// Crea proyecto en una cuenta/hub ACC
-async function createProject({ hubId, name, code, startDate, endDate, status = 'active', industry = 'AEC' }) {
-  if (!hubId) throw new Error('hubId es obligatorio');
+// Crea proyecto en una cuenta ACC (Construction Admin API)
+async function createProject({ hubId, accountId, name, code, startDate, endDate, status = 'active', classification = 'production' }) {
+  const accId = accountId || hubId; // compat con tu payload actual
+  if (!accId) throw new Error('accountId (hubId) es obligatorio');
   if (!name)  throw new Error('name es obligatorio');
 
-  // Project Admin API:
-  // POST /project/v1/accounts/:account_id/projects
-  const url = `/project/v1/accounts/${encodeURIComponent(hubId)}/projects`;
+  const url = `/construction/admin/v1/accounts/${encodeURIComponent(accId)}/projects`; // <-- NUEVO endpoint
   const body = {
     name,
-    projectType: industry || 'AEC',          // depende de tu cuenta; si tu tenant requiere algo distinto, lo ajustamos
+    classification,                 // 'production' | 'template'
     startDate: startDate || new Date().toISOString().slice(0,10),
     endDate: endDate || null,
-    status,                                   // 'active' | 'inactive'
-    jobNumber: code || null                   // código interno
+    jobNumber: code || null
+    // añade aquí más campos si los necesitas (type, address, timezone, etc.)
   };
 
   const resp = await aps.apiPost(url, body);
-  // distintas cuentas responden con shapes levemente distintos; capturamos varias rutas
-  const projectId = resp?.id || resp?.data?.id || resp?.projectId || resp?.data?.projectId;
-  if (!projectId) {
-    throw new Error(`Respuesta inesperada al crear proyecto ACC: ${JSON.stringify(resp).slice(0,300)}…`);
-  }
+  const projectId = resp?.id;
+  if (!projectId) throw new Error(`Respuesta inesperada al crear proyecto: ${JSON.stringify(resp).slice(0,300)}…`);
   return { projectId, raw: resp };
 }
 
+
 module.exports = { 
-  applyTemplateToProject, 
   createProject,
-  applyTemplateToProject: require('./admin.acc.service').applyTemplateToProject ?? (async () => { throw new Error('applyTemplateToProject no implementado aquí'); })
+  applyTemplateToProject
 };

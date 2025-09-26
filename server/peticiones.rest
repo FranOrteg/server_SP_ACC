@@ -24,6 +24,8 @@
 
 @SPO_TENANT_HOST=labitgroup.sharepoint.com
 
+@ACC_ACCOUNT_ID=1bb899d4-8dd4-42d8-aefd-6c0e35acd825
+
 
 ##############
 ### HEALTH ###
@@ -218,7 +220,7 @@ GET {{host}}/api/admin/twin
 ###############################
 
 ### Crear proyecto ACC desde cero + aplicar plantilla
-POST {{host}}/api/admin/acc/projects/create
+POST {{host}}{{urlAdmin}}/acc/projects/create
 Content-Type: application/json
 
 {
@@ -227,8 +229,18 @@ Content-Type: application/json
   "vars": { "code": "001", "name": "Demo" }
 }
 
+### Crear Proyecto
+POST {{host}}{{urlAdmin}}/acc/projects/create
+Content-Type: application/json
+
+{
+  "accountId": "{{ACC_ACCOUNT_ID}}",
+  "templateId": "labit-standard-v1",
+  "vars": { "code": "001", "name": "Demo" }
+}
+
 ### Crear sitio SP desde cero + aplicar plantilla
-POST {{host}}/api/admin/sp/sites/create
+POST {{host}}{{urlAdmin}}/sp/sites/create
 Content-Type: application/json
 
 {
@@ -239,7 +251,7 @@ Content-Type: application/json
 }
 
 ### Crear TWIN (ACC+SP) + aplicar + guardar vínculo
-POST {{host}}/api/admin/twin/create
+POST {{host}}{{urlAdmin}}/twin/create
 Content-Type: application/json
 
 {
@@ -253,3 +265,22 @@ Content-Type: application/json
   "twinId": "PRJ-001-DEMO"
 }
 
+### COMPROBACION TEMPORAL DEL ACOUNT ADMIN AAA #####
+####################################### SONDAS #####
+
+### Visivilidad de cuentas ACC
+GET {{host}}{{urlAdmin}}/acc/accounts
+
+### Visivilidad de cuentas ACC
+GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}
+
+### GET account details
+GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}/projects
+
+### Logout ACC
+GET {{host}}/api/oauth/logout
+
+### Verificar token scopes ACC
+GET {{host}}/api/oauth/me
+
+### http://localhost:3000/api/oauth/login?s=data:read,account:read,account:write 

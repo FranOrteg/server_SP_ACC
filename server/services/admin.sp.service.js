@@ -1,4 +1,5 @@
 // services/admin.sp.service.js
+
 const { graphGet, graphPost } = require('../clients/graphClient');
 const sp = require('./sharepoint.service');
 const { expandFolders, getPermissions } = require('./admin.template.service');
@@ -120,6 +121,4 @@ async function createSite({ type = 'CommunicationSite', title, url, description 
 module.exports = {
   applyTemplateToSite,
   createSite,
-  applyTemplateToSite: require('./admin.sp.service').applyTemplateToSite ?? (async () => { throw new Error('applyTemplateToSite no implementado aquí'); })
-
 };

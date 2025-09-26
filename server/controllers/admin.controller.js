@@ -87,16 +87,22 @@ async function createAccProject(req, res, next) {
   try {
     const { hubId, templateId, vars = {}, code, name } = req.body || {};
     if (!hubId || !templateId) return res.status(400).json({ error: 'hubId y templateId son obligatorios' });
+
     const tpl = await templates.loadTemplate(templateId);
     if (!tpl) return res.status(404).json({ error: 'template not found' });
 
     const resolvedName = name || templates.expandName(tpl, vars);
+
+    // 1) crear proyecto
     const created = await accAdmin.createProject({ hubId, name: resolvedName, code: code || vars.code });
 
-    await accAdmin.applyTemplateToProject({ projectId: created.projectId, template: tpl, resolvedName });
-    res.json({ ok: true, hubId, projectId: created.projectId, name: resolvedName });
+    // 2) aplicar plantilla (carpetas/roles)
+    const applied = await accAdmin.applyTemplateToProject({ projectId: created.projectId, template: tpl, resolvedName });
+
+    res.json({ ok: true, hubId, projectId: created.projectId, name: resolvedName, applied });
   } catch (e) { next(e); }
 }
+
 
 // --- NUEVO: crear sitio SP desde cero y aplicar plantilla ---
 async function createSpSite(req, res, next) {
@@ -155,11 +161,5 @@ module.exports = {
   listTwins,
   createAccProject,
   createSpSite,
-  createTwin,
-  getTemplate: require('./admin.controller').getTemplate,
-  applyAcc:    require('./admin.controller').applyAcc,
-  applySp:     require('./admin.controller').applySp,
-  applyTwin:   require('./admin.controller').applyTwin,
-  twinStatus:  require('./admin.controller').twinStatus,
-  listTwins:   require('./admin.controller').listTwins,
+  createTwin
 };

@@ -18,5 +18,7 @@ router.use('/audit', require('./api/audit'));
 // Admin
 router.use('/admin', require('./api/admin'));
 
+router.use('/oauth', require('./api/aps.oauth'));
+
 
 module.exports = router;
