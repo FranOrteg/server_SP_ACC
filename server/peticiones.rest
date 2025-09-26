@@ -224,10 +224,32 @@ POST {{host}}{{urlAdmin}}/acc/projects/create
 Content-Type: application/json
 
 {
-  "hubId": "{{HUB_ID}}",
-  "templateId": "labit-standard-v1",
-  "vars": { "code": "001", "name": "Demo" }
+  "accountId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+  "templateId": "labit-standard-v1",   
+  "template": "labit-standard-v1",     
+  "vars": { "code": "001", "name": "Demo", "type": "Other", "classification": "production" }
 }
+
+### Crear proyecto ACC desde cero SIN plantilla
+POST {{host}}{{urlAdmin}}/acc/projects/create
+Content-Type: application/json
+
+{
+  "hubId": "b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+  "template": "labit-standard-v1",
+  "vars": { "code": "002", "name": "Proyecto Libre", "type": "Other" }
+}
+
+### Crear solo clonando plantilla de ACC (sin carpetas propias)
+POST {{host}}{{urlAdmin}}/acc/projects/create
+Content-Type: application/json
+
+{
+  "accountId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+  "templateId": "labit-standard-v1",
+  "vars": { "code": "003", "name": "Solo Clonado", "type": "Other" }
+}
+
 
 ### Crear Proyecto
 POST {{host}}{{urlAdmin}}/acc/projects/create
@@ -268,6 +290,12 @@ Content-Type: application/json
 ### COMPROBACION TEMPORAL DEL ACOUNT ADMIN AAA #####
 ####################################### SONDAS #####
 
+### Logout ACC
+GET {{host}}/api/oauth/logout
+
+### Verificar token scopes ACC
+GET {{host}}/api/oauth/me
+
 ### Visivilidad de cuentas ACC
 GET {{host}}{{urlAdmin}}/acc/accounts
 
@@ -277,10 +305,5 @@ GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}
 ### GET account details
 GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}/projects
 
-### Logout ACC
-GET {{host}}/api/oauth/logout
-
-### Verificar token scopes ACC
-GET {{host}}/api/oauth/me
 
 ### http://localhost:3000/api/oauth/login?s=data:read,account:read,account:write 
