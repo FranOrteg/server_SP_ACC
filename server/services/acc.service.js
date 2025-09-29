@@ -4,6 +4,18 @@ const axios = require('axios');
 const aps = require('../clients/apsClient');
 const { sleep } = require('../clients/apsClient');
 
+// --- HELPERS ID FORMATO 'b.{guid}' ---
+function ensureB(id) {
+  if (!id) return id;
+  return String(id).startsWith('b.') ? id : `b.${id}`;
+}
+
+function assertDocIdsOrThrow({ hubIdDM, projectIdDM }) {
+  const RE_B = /^b\.[0-9a-f-]{36}$/i;
+  if (hubIdDM && !RE_B.test(hubIdDM)) throw new Error(`hubIdDM inválido: ${hubIdDM} (esperado 'b.{accountGuid}')`);
+  if (projectIdDM && !RE_B.test(projectIdDM)) throw new Error(`projectIdDM inválido: ${projectIdDM} (esperado 'b.{projectGuid}')`);
+}
+
 // --- LISTAR ---
 async function listHubs() {
   return await aps.apiGet('/project/v1/hubs');
@@ -58,13 +70,11 @@ async function findChildByName(projectId, parentFolderId, name) {
 }
 
 async function ensureFolder(projectId, parentFolderId, name) {
-  // 1) ¿ya existe?
   const existing = await findChildByName(projectId, parentFolderId, name);
   if (existing && existing.type === 'folders') {
     return { id: existing.id, created: false };
   }
 
-  // 2) intentar crear
   const body = {
     jsonapi: { version: '1.0' },
     data: {
@@ -84,9 +94,7 @@ async function ensureFolder(projectId, parentFolderId, name) {
     return { id: created.data?.id, created: true };
   } catch (err) {
     const status = err?.response?.status;
-    // 409 = la carpeta ya existe (p.ej. porque el primer intento 500 ya la creó y el retry choca)
     if (status === 409) {
-      // pequeña espera por consistencia eventual y volvemos a mirar
       await aps.sleep(600);
       const again = await findChildByName(projectId, parentFolderId, name);
       if (again && again.type === 'folders') {
@@ -108,7 +116,7 @@ async function createStorage(projectId, folderId, fileName) {
     }
   };
   const res = await aps.apiPost(`/data/v1/projects/${encodeURIComponent(projectId)}/storage`, body);
-  return res.data?.id; // urn:adsk.objects:os.object:wip.dm.prod/<guid>/<filename>
+  return res.data?.id;
 }
 
 function parseStorageUrn(storageUrn) {
@@ -159,7 +167,6 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
   console.log('[UPLOAD][init] uploadKey:', uploadKey);
   console.log('[UPLOAD][init] uploadUrl:', String(uploadUrl).slice(0, 120) + '…');
 
-  // PUT a S3 (sin auth APS)
   const stream = fs.createReadStream(localFilePath);
   const putRes = await axios.put(uploadUrl, stream, {
     headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': size },
@@ -169,18 +176,14 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
   });
   console.log('[UPLOAD][s3] status:', putRes.status);
 
-  // COMPLETE
   const completeBody = { uploadKey };
   console.log('[UPLOAD] POST', base, 'body:', completeBody);
   const fin = await aps.apiPost(base, completeBody, { headers: { 'x-ads-region': region } });
   console.log('[UPLOAD][complete] ok. keys:', Object.keys(fin || {}));
 
-  // Pequeña pausa para evitar condiciones de consistencia antes de crear item/version
   await sleep(300);
-
   return { ok: true, region, uploadKey };
 }
-
 
 // --- ARCHIVOS ---
 async function findItemByName(projectId, folderId, fileName) {
@@ -262,39 +265,28 @@ async function findHubForProject(projectId) {
 
   for (const hubId of hubs) {
     try {
-      // Si el proyecto no está en ese hub, Autodesk devuelve 404
       await aps.apiGet(`/project/v1/hubs/${encodeURIComponent(hubId)}/projects/${encodeURIComponent(projectId)}`);
-      return hubId; // encontrado
+      return hubId;
     } catch (e) {
       const status = e?.response?.status;
-      if (status === 404) continue; // prueba el siguiente hub
-      // Otros códigos: propaga (403/401/etc.)
+      if (status === 404) continue;
       throw e;
     }
   }
   throw new Error(`projectId ${projectId} no encontrado en ninguno de los hubs accesibles`);
 }
 
-
 // --- construir árbol recursivo ---
 async function listProjectTree(projectId, { includeItems = false, maxDepth = Infinity } = {}) {
   const { hubId, topFolders } = await getTopFoldersByProjectId(projectId);
 
-  // Nodo raíz “virtual” que agrupa los top folders
-  const root = {
-    projectId,
-    hubId,
-    type: 'project',
-    name: `project:${projectId}`,
-    children: []
-  };
+  const root = { projectId, hubId, type: 'project', name: `project:${projectId}`, children: [] };
 
-  // BFS para no reventar la pila en proyectos grandes
   const queue = [];
   for (const tf of topFolders) {
     const node = {
       id: tf.id,
-      type: tf.type,                 // 'folders'
+      type: tf.type,
       name: tf.attributes?.displayName || tf.attributes?.name,
       path: `/${tf.attributes?.displayName || tf.attributes?.name}`,
       children: []
@@ -307,27 +299,19 @@ async function listProjectTree(projectId, { includeItems = false, maxDepth = Inf
     const { node, depth } = queue.shift();
     if (depth > maxDepth) continue;
 
-    // Lista contenidos de la carpeta
     const page = await listFolderContents(projectId, node.id, { all: true, limit: 200 });
     const entries = page?.data || [];
 
     for (const entry of entries) {
       const isFolder = entry.type === 'folders';
       const display = entry.attributes?.displayName || entry.attributes?.name;
-      const child = {
-        id: entry.id,
-        type: entry.type, // 'folders' | 'items'
-        name: display,
-        path: `${node.path}/${display}`
-      };
+      const child = { id: entry.id, type: entry.type, name: display, path: `${node.path}/${display}` };
 
-      // Si es carpeta, la encolamos para seguir bajando
       if (isFolder) {
         child.children = [];
         node.children.push(child);
         queue.push({ node: child, depth: depth + 1 });
       } else {
-        // 'items': solo añadimos si includeItems=true
         if (includeItems) node.children.push(child);
       }
     }
@@ -335,7 +319,6 @@ async function listProjectTree(projectId, { includeItems = false, maxDepth = Inf
 
   return root;
 }
-
 
 // Devuelve el 'Project Files' folderId del proyecto (buscando en topFolders)
 async function getProjectFilesFolderId(projectId) {
@@ -354,7 +337,6 @@ function normalizeRoot(seg) {
 }
 
 // Busca/crea una carpeta por ruta absoluta bajo Project Files.
-// path p.ej: "/Project Files/09 SP" o "/Archivos de proyecto/09 SP"
 async function ensureFolderByPath(projectId, path) {
   if (!path?.startsWith('/')) throw new Error('path debe empezar por "/"');
 
@@ -370,7 +352,6 @@ async function ensureFolderByPath(projectId, path) {
   for (let i = 1; i < parts.length; i++) {
     const name = parts[i];
 
-    // ¿existe ya?
     const page = await listFolderContents(projectId, currentId, { all: true, limit: 200 });
     const child = (page.data || []).find(d =>
       d.type === 'folders' &&
@@ -384,38 +365,87 @@ async function ensureFolderByPath(projectId, path) {
       currentId = newId;
     }
   }
-  return currentId; // folderId final
+  return currentId;
 }
 
+// --- Espera a que el proyecto exista en DM (tras activar Docs) ---
+async function waitUntilDmProjectExists(hubId, projectId, {
+  timeoutMs = 180_000,
+  initialDelay = 500,
+  maxDelay = 6_000,
+  factor = 1.8
+} = {}) {
+  if (!hubId || !projectId) throw new Error('waitUntilDmProjectExists: hubId y projectId son obligatorios');
+
+  const hubIdDM = ensureB(hubId);
+  const projectIdDM = ensureB(projectId);
+  assertDocIdsOrThrow({ hubIdDM, projectIdDM });
+
+  const started = Date.now();
+  let delay = initialDelay;
+
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const list = await aps.apiGet(`/project/v1/hubs/${encodeURIComponent(hubIdDM)}/projects?page[limit]=50`);
+      if (Array.isArray(list?.data) && list.data.some(p => p.id === projectIdDM)) return true;
+
+      await aps.apiGet(`/project/v1/hubs/${encodeURIComponent(hubIdDM)}/projects/${encodeURIComponent(projectIdDM)}/topFolders`);
+      return true;
+    } catch (e) {
+      const st = e?.response?.status;
+      const code = e?.response?.data?.errors?.[0]?.code;
+      const transient = st === 404 || st === 503 || (st === 400 && code === 'BIM360DM_ERROR');
+      if (transient) {
+        await aps.sleep(delay);
+        delay = Math.min(Math.floor(delay * factor), maxDelay);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error('Timeout esperando aprovisionamiento de Docs en Data Management');
+}
 
 // --- REGION + HUB UTILS ---
 async function getTopFoldersByProjectId(projectId) {
+  const projectIdDM = ensureB(projectId);
+  assertDocIdsOrThrow({ projectIdDM });
+
   const hubs = await aps.apiGet('/project/v1/hubs');
 
   for (const h of (hubs.data || [])) {
-    const hubId = h.id;
+    const hubIdDM = h.id;
     try {
-      const u = `/project/v1/hubs/${encodeURIComponent(hubId)}/projects/${encodeURIComponent(projectId)}/topFolders`;
+      assertDocIdsOrThrow({ hubIdDM });
+
+      const u = `/project/v1/hubs/${encodeURIComponent(hubIdDM)}/projects/${encodeURIComponent(projectIdDM)}/topFolders`;
       const tf = await aps.apiGet(u);
 
       const hubRegion =
-        (h?.attributes?.extension?.data?.region ||  // ACC/BIM 360 actual
-         h?.attributes?.region ||                    // por si acaso legacy
+        (h?.attributes?.extension?.data?.region ||
+         h?.attributes?.region ||
          'US').toUpperCase();
 
-      return { hubId, topFolders: tf.data || [], hubRegion };
+      return { hubId: hubIdDM, topFolders: tf.data || [], hubRegion };
     } catch (e) {
-      // Si el proyecto no está en ese hub, suelen devolver 404; probamos el siguiente.
-      if (e?.response?.status === 404) continue;
-      // Otros errores: seguimos probando el siguiente hub también.
+      const status = e?.response?.status;
+      const code   = e?.response?.data?.errors?.[0]?.code;
+      const detail = (e?.response?.data?.errors?.[0]?.detail || '').toLowerCase();
+
+      if (status === 404) continue;
+      if (status === 400 && (code === 'BIM360DM_ERROR' || /got invalid data for project/i.test(detail))) {
+        await aps.sleep(1000);
+        continue;
+      }
+      continue;
     }
   }
 
-  throw new Error(`No se pudo resolver hub/topFolders para projectId ${projectId}`);
+  throw new Error(`No se pudo resolver hub/topFolders para projectId ${projectIdDM}`);
 }
 
-
 module.exports = {
+  ensureB,
   listHubs,
   listProjects,
   listTopFolders,
@@ -431,5 +461,6 @@ module.exports = {
   listProjectTree,
   getProjectFilesFolderId,
   ensureFolderByPath,
-  getTopFoldersByProjectId
+  getTopFoldersByProjectId,
+  waitUntilDmProjectExists
 };

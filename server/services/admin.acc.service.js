@@ -1,180 +1,291 @@
 // services/admin.acc.service.js
-const acc = require('./acc.service');
-const aps = require('../clients/apsUserClient');
-const { expandFolders, getPermissions } = require('./admin.template.service');
+//
+// Servicio "Admin ACC" (3-legged) para crear proyectos en Construction Admin,
+// (best-effort) activar Docs, esperar aprovisionamiento en DM y aplicar tu
+// plantilla de carpetas en Docs. Incluye ensureProjectMember() para visibilidad.
+//
+// Depende de:
+//  - clients/apsUserClient (3LO)  -> Construction Admin API
+//  - services/acc.service (2LO)   -> Data Management (project/v1, data/v1)
+//  - services/admin.template.service
 
-/* =========================
- * Helpers
- * ========================= */
+const apsUser = require('../clients/apsUserClient');
+const dm = require('./acc.service');
+const templates = require('./admin.template.service');
 
-// Normaliza la respuesta de ensureFolderByPath a { id, created }
-async function ensurePath(projectIdDM, fullPath) {
-  let out;
-  try {
-    out = await acc.ensureFolderByPath(projectIdDM, fullPath, { create: true });
-  } catch {
-    out = await acc.ensureFolderByPath(projectIdDM, fullPath, true);
-  }
-  if (!out) return { id: null, created: false };
-  if (typeof out === 'string') return { id: out, created: false };
-  if (typeof out === 'object' && out.id) return { id: out.id, created: !!out.created };
-  return { id: out, created: false };
+const LOG = (...a) => console.log('[ACC]', ...a);
+const WARN = (...a) => console.warn('[ACC]', ...a);
+
+// ------------------ Utils ------------------
+
+function ensureB(id) {
+  if (!id) return id;
+  return String(id).startsWith('b.') ? id : `b.${id}`;
 }
 
-// Elimina claves con undefined o null
-function compact(obj = {}) {
-  const out = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v === undefined || v === null) continue;
-    out[k] = v;
+// ------------------ Activar Docs (best-effort) ------------------
+
+async function activateDocs(projectAdminId) {
+  // En varios tenants este endpoint no está expuesto → devolver sin bloquear si todo da 404
+  const tried = [];
+  const candidates = [
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=doc_mgmt`,
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=document_management`,
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=docs`,
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}:activate?service=doc_mgmt`,
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}:activate?service=document_management`,
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}:activate?service=docs`,
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/actions:activate?service=doc_mgmt`,
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/actions:activate?service=document_management`,
+    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/actions:activate?service=docs`
+  ];
+
+  for (const url of candidates) {
+    try {
+      await apsUser.apiPost(url, {}); // 200/202/204 esperado si existe
+      LOG('[activateDocs] OK via', url);
+      return { ok: true, via: url };
+    } catch (e) {
+      const s = e?.response?.status;
+      if (s === 404) {
+        LOG('[activateDocs] 404 (no disponible en este tenant). Alias:', url.split('=')[1]);
+        tried.push(url);
+        continue;
+      }
+      // Otros códigos, registramos y seguimos probando
+      WARN('[activateDocs] fallo', s, '->', e?.response?.data || e?.message);
+      tried.push(url);
+    }
   }
-  return out;
+  LOG('[activateDocs] endpoint no disponible en este tenant (solo 404). Continuamos sin bloquear.');
+  return { ok: true, skipped: true, tried };
 }
 
-// Construye IDs de DM a partir de Admin
-function makeDmIds(accountId, adminProjectId) {
-  const hubIdDM = `b.${accountId}`;
-  const projectIdDM = `b.${accountId}.${adminProjectId}`;
-  return { hubIdDM, projectIdDM };
+// ------------------ Miembros de Proyecto ------------------
+
+/**
+ * Invita o asegura un miembro al proyecto para que aparezca en Docs de inmediato.
+ * Según el tenant, el endpoint difiere; probamos varias variantes como best-effort.
+ * Retorna { ok, email, added|already }.
+ */
+async function ensureProjectMember({
+  accountId,
+  projectId,     // Admin GUID “pelado”
+  email,
+  makeProjectAdmin = true,
+  grantDocs = 'admin' // 'admin' | 'standard' | 'view'
+}) {
+  if (!email) throw new Error('ensureProjectMember: email es obligatorio');
+
+  const rid = (s) => s?.replace(/^b\./, '');
+  const accId = rid(accountId);
+  const pid   = rid(projectId);
+
+  // Candidatos (distintos tenants) + payloads alternativos
+  const urls = [
+    `/construction/admin/v1/projects/${pid}/users:bulk-invite`,
+    `/construction/admin/v1/projects/${pid}/users:invite`,
+    `/construction/admin/v1/projects/${pid}/users`,
+    `/construction/admin/v1/accounts/${accId}/projects/${pid}/users:bulk-invite`
+  ];
+
+  const payloads = [
+    // Variante 1: bulk-invite
+    {
+      users: [{
+        email,
+        // algunas orgs aceptan flags directos
+        projectAdmin: !!makeProjectAdmin,
+        products: { docs: grantDocs } // admin|standard|view
+      }]
+    },
+    // Variante 2: invite simple
+    {
+      email,
+      projectAdmin: !!makeProjectAdmin,
+      products: { docs: grantDocs }
+    },
+    // Variante 3: estructura alternativa
+    {
+      users: [{
+        email,
+        roles: makeProjectAdmin ? ['project_admin'] : ['project_member'],
+        access: { docs: grantDocs }
+      }]
+    }
+  ];
+
+  // Intentamos todas las combinaciones hasta que una no devuelva 4xx “not found”
+  for (const url of urls) {
+    for (const body of payloads) {
+      try {
+        const r = await apsUser.apiPost(url, body);
+        LOG('[ensureProjectMember] OK', email, 'via', url);
+        return { ok: true, email, via: url, result: r };
+      } catch (e) {
+        const st = e?.response?.status;
+        const data = e?.response?.data;
+        // 409 o 207 (multi-status) suelen implicar "ya estaba"
+        if (st === 409 || String(data).toLowerCase().includes('already')) {
+          LOG('[ensureProjectMember] ya estaba', email, 'via', url);
+          return { ok: true, email, already: true, via: url };
+        }
+        // 4xx distintos a 404: seguimos probando otra payload; 404: probamos otro URL
+        if (st && st !== 404) {
+          WARN('[ensureProjectMember] fallo', st, 'via', url, '->', data || e.message);
+          continue;
+        }
+        if (st === 404) {
+          LOG('[ensureProjectMember] 404 en', url, 'probando siguiente variante…');
+          break; // cambia de url
+        }
+        // otros (timeout, 5xx) -> seguimos intentando
+        WARN('[ensureProjectMember] error transitorio via', url, '->', data || e.message);
+      }
+    }
+  }
+  // Si todas fallan, devolvemos no-bloqueante
+  WARN('[ensureProjectMember] no se pudo invitar por API en este tenant. Continúo.');
+  return { ok: true, email, skipped: true };
 }
 
-// (opcional) pequeña espera
-const delay = ms => new Promise(r => setTimeout(r, ms));
+// ------------------ Creación de proyecto ------------------
 
-// Resuelve un “templateId” de Admin (UUID) o alias humano contra Admin v1
-async function resolveTemplateProjectId(accountId, templateAliasOrId) {
-  if (!templateAliasOrId) return null;
-  // UUID?
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(templateAliasOrId)) {
-    return templateAliasOrId;
-  }
-  const url = `/construction/admin/v1/accounts/${encodeURIComponent(accountId)}/projects?filter[classification]=template`;
-  const list = await aps.apiGet(url);
-  const results = Array.isArray(list?.results) ? list.results : (Array.isArray(list) ? list : []);
-  const alias = String(templateAliasOrId).toLowerCase();
-  const hit = results.find(p => (p?.name || '').toLowerCase().includes(alias));
-  if (!hit) throw new Error(`No encuentro plantilla en la cuenta ${accountId} para alias: "${templateAliasOrId}". Usa el UUID del proyecto plantilla o revisa el nombre.`);
-  return hit.id;
-}
+async function createProject({
+  hubId,
+  accountId,
+  name,
+  code,
+  vars = {},
+  type = 'Other',
+  classification = 'production',
+  startDate,
+  endDate,
+  onNameConflict = 'suffix-timestamp'
+}) {
+  const accId = (accountId || (hubId || '').replace(/^b\./, '') || '').trim();
+  if (!accId) throw new Error('createProject: accountId|hubId es obligatorio');
+  if (!name) throw new Error('createProject: name es obligatorio');
 
-/* =========================
- * Aplicar plantilla (carpetas/permissions)
- * ========================= */
-
-async function applyTemplateToProject({ accountId, projectId /* Admin GUID */, projectIdDM, template, resolvedName }) {
-  // Aseguramos usar el projectId **de DM**
-  const dm = projectIdDM || makeDmIds(accountId, projectId).projectIdDM;
-
-  // Puede tardar unos segundos tras el 202 de creación
-  await delay(2500);
-
-  const created = [];
-  const ensured = [];
-
-  // Asegura "/Project Files"
-  {
-    const base = '/Project Files';
-    const res = await ensurePath(dm, base);
-    if (!res.id) throw new Error(`No se pudo asegurar "/Project Files" en ACC (projectIdDM: ${dm})`);
-  }
-
-  // Carpetas de la plantilla
-  const folders = expandFolders(template);
-  for (const rel of folders) {
-    const fullPath = `/Project Files/${rel}`;
-    const res = await ensurePath(dm, fullPath);
-    if (res.created) created.push(fullPath); else ensured.push(fullPath);
-  }
-
-  // Permisos (opcional por ahora)
-  const perms = getPermissions(template);
-  // TODO: mapear groups/role → permisos ACC si tienes helpers (acc.ensurePermission)
-
-  return {
-    projectId,           // Admin GUID
-    projectIdDM: dm,     // DM ID
-    name: resolvedName,
-    folders: { created, ensured },
-    permissionsApplied: perms.length || 0
-  };
-}
-
-/* =========================
- * Crear proyecto (ACC Admin v1)
- * ========================= */
-
-async function createProject(input = {}) {
-  const {
-    hubId,
-    accountId: accountIdRaw,
-    templateId: templateAliasOrId,
-    vars = {},
-    name: nameDirect,
-    code: codeDirect,
-    startDate: startDirect,
-    endDate: endDirect,
-    classification: classDirect = 'production'
-  } = input;
-
-  // Deriva accountId
-  let accountId = accountIdRaw || hubId;
-  if (!accountId) throw new Error('hubId o accountId es obligatorio');
-  accountId = String(accountId).replace(/^b\./, '');
-
-  // Deriva name / code desde vars o desde top-level
-  const code = vars.code ?? codeDirect ?? undefined;
-  const baseName = vars.name ?? nameDirect ?? undefined;
-  if (!baseName) throw new Error('name (o vars.name) es obligatorio');
-
-  // Nombre final
-  const resolvedName = code ? `PRJ-${code}-${baseName}` : baseName;
-
-  // Fechas
-  const startDate = vars.startDate ?? startDirect ?? new Date().toISOString().slice(0, 10);
-  const endDate = vars.endDate ?? endDirect ?? undefined;
-
-  // Campos obligatorios Admin v1
-  const classification = vars.classification ?? classDirect ?? 'production';
-  const type = vars.type ?? 'Other';
-
-  const body = compact({
-    name: resolvedName,
+  const payload = {
+    name,
     classification,
-    type,            // OBLIGATORIO
-    jobNumber: code, // opcional
-    startDate,
-    endDate
-  });
+    startDate: startDate || new Date().toISOString().slice(0, 10),
+    endDate: endDate || null,
+    jobNumber: code || vars.code || undefined,
+    type
+  };
 
-  // Plantilla Admin (clonado)
-  if (templateAliasOrId) {
-    const tplId = await resolveTemplateProjectId(accountId, templateAliasOrId);
-    body.template = { projectId: tplId };
-    console.log('[ACC] Clonando desde plantilla =>', tplId);
+  // 1) Crear en Admin API con manejo 409 -> renombrar con sufijo
+  let created;
+  try {
+    created = await apsUser.apiPost(
+      `/construction/admin/v1/accounts/${encodeURIComponent(accId)}/projects`,
+      payload
+    );
+  } catch (err) {
+    const status = err?.response?.status;
+    if (status === 409 && onNameConflict !== 'fail') {
+      const ts = (vars?.code || '').toString().padStart(3, '0') || Date.now().toString().slice(-6);
+      const retryName = `${name}-${ts}`;
+      WARN('409 nombre duplicado. Reintentando con:', retryName);
+      const retryPayload = { ...payload, name: retryName };
+      created = await apsUser.apiPost(
+        `/construction/admin/v1/accounts/${encodeURIComponent(accId)}/projects`,
+        retryPayload
+      );
+    } else {
+      throw err;
+    }
   }
 
-  const url = `/construction/admin/v1/accounts/${encodeURIComponent(accountId)}/projects`;
-  console.log('[ACC] POST', url, 'payload =>', JSON.stringify(body));
-
-  const resp = await aps.apiPost(url, body); // 202 Accepted
-  const adminProjectId = resp?.id;
-  if (!adminProjectId) {
-    throw new Error(`Respuesta inesperada al crear proyecto ACC: ${JSON.stringify(resp).slice(0, 300)}…`);
+  // Normalizamos el id (GET si hace falta)
+  let pid =
+    created?.id ||
+    created?.data?.id ||
+    created?.projectId ||
+    (created?.links?.self && created.links.self.split('/').pop());
+  if (!pid && created?.links?.self) {
+    const info = await apsUser.apiGet(created.links.self);
+    pid = info?.id || null;
   }
+  if (!pid) throw new Error('No se pudo resolver el projectId de Admin tras la creación');
 
-  // Devuelve también IDs de DM ya “construidos”
-  const dm = makeDmIds(accountId, adminProjectId);
+  // 2) Activar Docs (best-effort)
+  await activateDocs(pid);
+
+  // 3) Esperar a que exista en Data Management
+  const hubIdDM = ensureB(accId);
+  const projectIdDM = ensureB(pid);
+  await dm.waitUntilDmProjectExists(hubIdDM, projectIdDM);
+
+  // 4) Metadata DM útil
+  let dmMeta = {};
+  try {
+    const tf = await dm.getTopFoldersByProjectId(projectIdDM);
+    dmMeta = { hubIdDM: tf.hubId, projectIdDM, hubRegion: tf.hubRegion };
+  } catch {
+    dmMeta = { hubIdDM, projectIdDM };
+  }
 
   return {
-    accountId,
-    projectId: adminProjectId, // Admin GUID
-    name: resolvedName,
-    dm,                        // { hubIdDM, projectIdDM }
-    raw: resp
+    ok: true,
+    accountId: accId,
+    projectId: pid, // Admin GUID
+    name: created?.name || payload.name,
+    dm: dmMeta
   };
+}
+
+// ------------------ Aplicar plantilla de carpetas ------------------
+
+async function applyTemplateToProject({
+  accountId,
+  projectId,
+  projectIdDM,
+  template,
+  resolvedName,
+  vars = {}
+}) {
+  if (!template) throw new Error('applyTemplateToProject: template es obligatorio');
+  if (!(projectId || projectIdDM)) throw new Error('applyTemplateToProject: projectId|projectIdDM requerido');
+
+  const pidDM = ensureB(projectIdDM || projectId);
+
+  // Garantiza que el proyecto está visible en DM
+  let hubIdDM = ensureB(accountId || '');
+  try {
+    const tf = await dm.getTopFoldersByProjectId(pidDM);
+    hubIdDM = tf.hubId || hubIdDM;
+  } catch (e) {
+    try {
+      await dm.waitUntilDmProjectExists(hubIdDM, pidDM, { timeoutMs: 60_000 });
+      await dm.getTopFoldersByProjectId(pidDM);
+    } catch (e2) {
+      throw e;
+    }
+  }
+
+  // Expandir carpetas
+  const expandVars = { name: resolvedName, ...(vars || {}) };
+  const folders = templates.expandFolders(template, expandVars);
+
+  // Crear bajo "/Project Files"
+  const pfId = await dm.getProjectFilesFolderId(pidDM);
+  const created = [];
+  for (const f of folders) {
+    const clean = f.split('/').filter(Boolean).join('/');
+    const path = `/Project Files/${clean}`;
+    const folderId = await dm.ensureFolderByPath(pidDM, path);
+    created.push({ path, folderId });
+  }
+
+  return { ok: true, hubIdDM, projectIdDM: pidDM, folders: created };
 }
 
 module.exports = {
   createProject,
-  applyTemplateToProject
+  applyTemplateToProject,
+  activateDocs,
+  ensureProjectMember
 };

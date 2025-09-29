@@ -224,10 +224,10 @@ POST {{host}}{{urlAdmin}}/acc/projects/create
 Content-Type: application/json
 
 {
-  "accountId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
-  "templateId": "labit-standard-v1",   
-  "template": "labit-standard-v1",     
-  "vars": { "code": "001", "name": "Demo", "type": "Other", "classification": "production" }
+  "hubId": "b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+  "template": "labit-standard-v1",
+  "vars": { "code": "002", "name": "Proyecto Libreeeee", "type": "Other", "classification": "production" },
+  "memberEmail": "support@labit.es"
 }
 
 ### Crear proyecto ACC desde cero SIN plantilla
@@ -306,4 +306,4 @@ GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}
 GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}/projects
 
 
-### http://localhost:3000/api/oauth/login?s=data:read,account:read,account:write 
+### http://localhost:3000/api/oauth/login?s=data:read,data:write,account:read,account:write

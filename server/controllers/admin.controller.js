@@ -1,7 +1,7 @@
 // controllers/admin.controller.js
 
 const templates = require('../services/admin.template.service');
-const accAdmin  = require('../services/admin.acc.service');
+const accAdmin  = require('../services/admin.acc.service');   // usa el unificado 3LO+DM
 const spAdmin   = require('../services/admin.sp.service');
 const twinSvc   = require('../services/admin.twin.service');
 
@@ -15,7 +15,7 @@ async function getTemplate(req, res, next) {
 
 /**
  * Aplica plantilla SOLO en ACC (carpetas/permisos en Docs) sobre un proyecto EXISTENTE.
- * IMPORTANTE: necesitamos saber el accountId (o hubId) para construir el projectId de DM.
+ * Nota: Construction Admin usa GUID “pelado”; Data Management necesita 'b.{guid}'.
  */
 async function applyAcc(req, res, next) {
   try {
@@ -23,7 +23,6 @@ async function applyAcc(req, res, next) {
     if (!projectId || !templateId) {
       return res.status(400).json({ error: 'projectId y templateId son obligatorios' });
     }
-    // Necesitamos accountId/hubId para construir el projectId de DM
     const accId = (accountId || hubId || '').toString().replace(/^b\./, '');
     if (!accId) {
       return res.status(400).json({ error: 'accountId o hubId es obligatorio para aplicar carpetas en Docs' });
@@ -34,11 +33,9 @@ async function applyAcc(req, res, next) {
 
     const name = templates.expandName(tpl, vars);
 
-    // PASO CLAVE: pasamos accountId y projectId (Admin GUID) para que el service
-    // construya el projectId de DM como b.{accountId}.{projectId}
     const r = await accAdmin.applyTemplateToProject({
       accountId: accId,
-      projectId,              // Admin GUID
+      projectId,              // Admin GUID (sin 'b.')
       template: tpl,
       resolvedName: name
     });
@@ -78,15 +75,13 @@ async function applyTwin(req, res, next) {
 
     const name = templates.expandName(tpl, vars);
 
-    // ACC: aplicar plantilla de carpetas sobre proyecto existente
     const accRes = await accAdmin.applyTemplateToProject({
       accountId: accId,
-      projectId,          // Admin GUID
+      projectId,
       template: tpl,
       resolvedName: name
     });
 
-    // SP
     const spRes  = await spAdmin.applyTemplateToSite({ siteId, siteUrl, template: tpl, resolvedName: name });
 
     const link = await twinSvc.saveLink({
@@ -117,82 +112,73 @@ async function listTwins(_req, res, next) {
 
 // ------------------------------------------------------------------------------------------- //
 // CREAR PROYECTO ACC (con o sin plantilla ACC) y opcionalmente aplicar tu plantilla de carpetas
+// y añadir un miembro al proyecto para que aparezca en Docs inmediatamente.
 
-/**
- * Body soportado:
- * {
- *   "hubId": "b.{accountGuid}"            // opcional si pasas accountId
- *   "accountId": "{accountGuid}"          // opcional si pasas hubId
- *   "templateId": "alias-o-uuid-admin",   // opcional -> clona en Admin
- *   "template": "labit-standard-v1"       // opcional -> tu plantilla de carpetas (clave o JSON)
- *   "vars": { "code":"001", "name":"Demo", "type":"Other", "classification":"production", ... },
- *   "name": "Nombre directo (opcional)",
- *   "code": "001",                        // opcional si viene en vars
- *   "startDate": "YYYY-MM-DD",            // opcional
- *   "endDate": "YYYY-MM-DD"               // opcional
- * }
- */
 async function createAccProject(req, res, next) {
   try {
     const {
-      hubId, accountId, templateId, template,
-      vars = {}, code, name, startDate, endDate, classification, type
+      hubId, accountId,
+      templateId, template,      // admite cualquiera de los dos (tu JSON local)
+      vars = {},
+      code, name,
+      memberEmail,               // 👈 NUEVO: miembro a invitar (p.ej. support@labit.es)
+      onNameConflict = 'suffix-timestamp'
     } = req.body || {};
 
-    // Debe venir hubId o accountId
-    if (!(hubId || accountId)) {
-      return res.status(400).json({ error: 'hubId o accountId es obligatorio' });
+    const tplKey = templateId || template;
+    if (!(hubId || accountId) || !tplKey) {
+      return res.status(400).json({ error: 'hubId|accountId y templateId|template son obligatorios' });
     }
 
-    // Si se envía plantilla de carpetas como string, la cargamos
-    let tplObj = template;
-    if (tplObj && typeof tplObj === 'string') {
-      tplObj = await templates.loadTemplate(tplObj);
-      if (!tplObj) return res.status(404).json({ error: `template "${template}" not found` });
-    }
+    const tpl = await templates.loadTemplate(tplKey);
+    if (!tpl) return res.status(404).json({ error: 'template not found' });
 
-    // Si NO hay nombre directo, se expande desde plantilla (si existe) o desde vars
-    const nameFromTpl = tplObj ? templates.expandName(tplObj, vars) : null;
-    const resolvedName = name || nameFromTpl || (vars.name ? `${vars.name}` : null);
-    if (!resolvedName) {
-      return res.status(400).json({ error: 'name (o vars.name) es obligatorio cuando no se pasa template de carpetas' });
-    }
+    const resolvedName = name || templates.expandName(tpl, vars);
 
-    // 1) Crear en Admin (si templateId ⇒ clona en ACC)
+    // 1) Crea el proyecto en ACC (+ activa Docs best-effort + espera DM)
     const created = await accAdmin.createProject({
-      hubId, accountId, templateId,
-      vars, name: resolvedName, code,
-      startDate, endDate, classification, type
+      hubId, accountId, name: resolvedName, code: code || vars.code, vars,
+      type: vars.type, classification: vars.classification || 'production',
+      onNameConflict
     });
-    // created => { accountId, projectId (Admin GUID), name, dm: { hubIdDM, projectIdDM }, raw }
 
-    // 2) Aplicar TU plantilla de carpetas/permisos en Docs (opcional)
-    let applied = null;
-    if (tplObj) {
-      applied = await accAdmin.applyTemplateToProject({
+    // 1.1) (Opcional recomendado) invitar miembro para visibilidad inmediata en Docs
+    let memberResult = null;
+    if (memberEmail) {
+      memberResult = await accAdmin.ensureProjectMember({
         accountId: created.accountId,
-        projectId: created.projectId,           // Admin GUID
-        projectIdDM: created.dm?.projectIdDM,   // DM ID directo
-        template: tplObj,
-        resolvedName
+        projectId: created.projectId,
+        email: memberEmail,
+        makeProjectAdmin: true,            // por defecto le damos Project Admin
+        grantDocs: 'admin'                 // acceso Docs admin
       });
     }
 
-    res.json({
-      ok: true,
-      project: {
-        id: created.projectId,         // Admin GUID
-        name: created.name,
-        accountId: created.accountId,
-        dm: created.dm                 // { hubIdDM, projectIdDM }
-      },
-      applied // null si no se aplicó plantilla de carpetas
+    // 2) Aplica tu plantilla en Docs
+    const applied = await accAdmin.applyTemplateToProject({
+      accountId: created.accountId,
+      projectId: created.projectId,             // Admin GUID
+      projectIdDM: created.dm.projectIdDM,      // 'b.{projectGuid}'
+      template: tpl,
+      resolvedName
     });
 
-    console.log('[createAccProject] body =>', req.body);
+    res.json({
+      ok: true,
+      hubId: hubId || `b.${created.accountId}`,
+      accountId: created.accountId,
+      projectId: created.projectId,
+      projectIdDM: created.dm.projectIdDM,
+      name: created.name,
+      member: memberResult,
+      applied
+    });
   } catch (e) {
-    console.error('createAccProject ERROR:', e?.response?.data || e);
-    res.status(400).json({ error: e?.message || 'Bad Request' });
+    console.error('createAccProject ERROR:', e);
+    const status = e?.response?.status;
+    const data   = e?.response?.data;
+    if (status && data) return res.status(400).json({ error: data });
+    next(e);
   }
 }
 
@@ -215,33 +201,43 @@ async function createSpSite(req, res, next) {
 // --- Crear TWIN (ACC + SP), aplicar y guardar vínculo ---
 async function createTwin(req, res, next) {
   try {
-    const { hubId, accountId, sp = {}, templateId, template, vars = {}, twinId, code, name } = req.body || {};
+    const { hubId, accountId, sp = {}, templateId, template, vars = {}, twinId, code, name, memberEmail } = req.body || {};
     if (!(hubId || accountId) || !templateId || !sp?.url) {
       return res.status(400).json({ error: 'hubId|accountId, templateId y sp.url son obligatorios' });
     }
 
-    // Plantilla de carpetas (tu JSON) opcional
     let tplObj = template;
     if (tplObj && typeof tplObj === 'string') {
       tplObj = await templates.loadTemplate(tplObj);
       if (!tplObj) return res.status(404).json({ error: `template "${template}" not found` });
     }
 
-    // Plantilla Admin para nombre (si no hay name directo)
     const tplAdmin = await templates.loadTemplate(templateId).catch(() => null);
     const resolvedName = name || (tplAdmin ? templates.expandName(tplAdmin, vars) : (tplObj ? templates.expandName(tplObj, vars) : vars.name)) || null;
     if (!resolvedName) return res.status(400).json({ error: 'name (o vars.name) es obligatorio' });
 
-    // 1) ACC (crea y opcionalmente aplica carpetas)
+    // 1) ACC
     const accCreated = await accAdmin.createProject({
-      hubId, accountId, templateId, vars, name: resolvedName, code
+      hubId, accountId, name: resolvedName, code, vars
     });
+
+    // 1.1) miembro opcional
+    let memberResult = null;
+    if (memberEmail) {
+      memberResult = await accAdmin.ensureProjectMember({
+        accountId: accCreated.accountId,
+        projectId: accCreated.projectId,
+        email: memberEmail,
+        makeProjectAdmin: true,
+        grantDocs: 'admin'
+      });
+    }
 
     if (tplObj) {
       await accAdmin.applyTemplateToProject({
         accountId: accCreated.accountId,
-        projectId: accCreated.projectId,           // Admin GUID
-        projectIdDM: accCreated.dm?.projectIdDM,   // DM ID
+        projectId: accCreated.projectId,
+        projectIdDM: accCreated.dm?.projectIdDM,
         template: tplObj,
         resolvedName
       });
@@ -269,18 +265,18 @@ async function createTwin(req, res, next) {
       ok: true,
       name: resolvedName,
       link,
-      acc: { projectId: accCreated.projectId, accountId: accCreated.accountId, dm: accCreated.dm },
+      acc: { projectId: accCreated.projectId, accountId: accCreated.accountId, dm: accCreated.dm, member: memberResult },
       sp: spCreated
     });
   } catch (e) { next(e); }
 }
 
-module.exports = { 
-  getTemplate, 
-  applyAcc, 
-  applySp, 
-  applyTwin, 
-  twinStatus, 
+module.exports = {
+  getTemplate,
+  applyAcc,
+  applySp,
+  applyTwin,
+  twinStatus,
   listTwins,
   createAccProject,
   createSpSite,
