@@ -48,14 +48,12 @@ async function activateDocs(projectAdminId) {
     } catch (e) {
       const s = e?.response?.status;
       if (s === 404) {
-        LOG('[activateDocs] 404 (no disponible en este tenant). Alias:', url.split('=')[1]);
-        tried.push(url);
-        continue;
+        console.log('[ACC][activateDocs] endpoint no disponible en este tenant (404). Continuamos.');
+      } else {
+        console.log('[ACC][activateDocs] best-effort, continuar. Motivo:', s || e.message);
       }
-      // Otros códigos, registramos y seguimos probando
-      WARN('[activateDocs] fallo', s, '->', e?.response?.data || e?.message);
-      tried.push(url);
     }
+
   }
   LOG('[activateDocs] endpoint no disponible en este tenant (solo 404). Continuamos sin bloquear.');
   return { ok: true, skipped: true, tried };
@@ -64,93 +62,85 @@ async function activateDocs(projectAdminId) {
 // ------------------ Miembros de Proyecto ------------------
 
 /**
- * Invita o asegura un miembro al proyecto para que aparezca en Docs de inmediato.
- * Según el tenant, el endpoint difiere; probamos varias variantes como best-effort.
- * Retorna { ok, email, added|already }.
+ * Invita/asegura un miembro en el proyecto (ACC Admin v1).
+ * Requisitos:
+ *  - El email debe existir en la cuenta (Account Admin / Account Member).
+ *  - El endpoint válido en tu tenant es v1 projects/{id}/users con products[] {key, access}.
  */
 async function ensureProjectMember({
   accountId,
-  projectId,     // Admin GUID “pelado”
+  projectId,
   email,
-  makeProjectAdmin = true,
-  grantDocs = 'admin' // 'admin' | 'standard' | 'view'
+  makeProjectAdmin = true,      // añade projectAdministration:administrator
+  grantDocs = 'admin'           // 'admin' | 'member' | false
 }) {
-  if (!email) throw new Error('ensureProjectMember: email es obligatorio');
+  if (!projectId || !email) throw new Error('ensureProjectMember: projectId y email son obligatorios');
 
-  const rid = (s) => s?.replace(/^b\./, '');
-  const accId = rid(accountId);
-  const pid   = rid(projectId);
-
-  // Candidatos (distintos tenants) + payloads alternativos
-  const urls = [
-    `/construction/admin/v1/projects/${pid}/users:bulk-invite`,
-    `/construction/admin/v1/projects/${pid}/users:invite`,
-    `/construction/admin/v1/projects/${pid}/users`,
-    `/construction/admin/v1/accounts/${accId}/projects/${pid}/users:bulk-invite`
-  ];
-
-  const payloads = [
-    // Variante 1: bulk-invite
-    {
-      users: [{
-        email,
-        // algunas orgs aceptan flags directos
-        projectAdmin: !!makeProjectAdmin,
-        products: { docs: grantDocs } // admin|standard|view
-      }]
-    },
-    // Variante 2: invite simple
-    {
-      email,
-      projectAdmin: !!makeProjectAdmin,
-      products: { docs: grantDocs }
-    },
-    // Variante 3: estructura alternativa
-    {
-      users: [{
-        email,
-        roles: makeProjectAdmin ? ['project_admin'] : ['project_member'],
-        access: { docs: grantDocs }
-      }]
-    }
-  ];
-
-  // Intentamos todas las combinaciones hasta que una no devuelva 4xx “not found”
-  for (const url of urls) {
-    for (const body of payloads) {
-      try {
-        const r = await apsUser.apiPost(url, body);
-        LOG('[ensureProjectMember] OK', email, 'via', url);
-        return { ok: true, email, via: url, result: r };
-      } catch (e) {
-        const st = e?.response?.status;
-        const data = e?.response?.data;
-        // 409 o 207 (multi-status) suelen implicar "ya estaba"
-        if (st === 409 || String(data).toLowerCase().includes('already')) {
-          LOG('[ensureProjectMember] ya estaba', email, 'via', url);
-          return { ok: true, email, already: true, via: url };
-        }
-        // 4xx distintos a 404: seguimos probando otra payload; 404: probamos otro URL
-        if (st && st !== 404) {
-          WARN('[ensureProjectMember] fallo', st, 'via', url, '->', data || e.message);
-          continue;
-        }
-        if (st === 404) {
-          LOG('[ensureProjectMember] 404 en', url, 'probando siguiente variante…');
-          break; // cambia de url
-        }
-        // otros (timeout, 5xx) -> seguimos intentando
-        WARN('[ensureProjectMember] error transitorio via', url, '->', data || e.message);
-      }
-    }
+  const products = [];
+  if (makeProjectAdmin) {
+    products.push({ key: 'projectAdministration', access: 'administrator' });
   }
-  // Si todas fallan, devolvemos no-bloqueante
-  WARN('[ensureProjectMember] no se pudo invitar por API en este tenant. Continúo.');
-  return { ok: true, email, skipped: true };
+  if (grantDocs) {
+    products.push({
+      key: 'docs',
+      access: grantDocs === 'admin' ? 'administrator' : 'member'
+    });
+  }
+
+  // 🚩 Este es el endpoint que acepta tu tenant:
+  const url = `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users`;
+  try {
+    const resp = await apsUser.apiPost(url, { email, products }); // <-- forma correcta
+    // Opcional: esperar a que quede "active"
+    await waitForProjectUserActive(projectId, email, { maxTries: 10, delayMs: 2000 });
+
+    return {
+      ok: true,
+      email,
+      via: url
+    };
+  } catch (e) {
+    const st = e?.response?.status;
+    const data = e?.response?.data;
+    console.warn('[ACC][ensureProjectMember] fallo', st, 'via', url, '->', data || e.message);
+    return {
+      ok: false,
+      email,
+      skipped: true,
+      status: st,
+      error: data || e.message
+    };
+  }
 }
+
+/**
+ * Espera hasta que el usuario aparezca con status "active" en el proyecto.
+ */
+async function waitForProjectUserActive(projectId, email, { maxTries = 8, delayMs = 1500 } = {}) {
+  for (let i = 0; i < maxTries; i++) {
+    try {
+      const list = await apsUser.apiGet(`/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users?limit=1000&offset=0`);
+      const hit = (list?.results || []).find(u => (u.email || '').toLowerCase() === email.toLowerCase());
+      if (hit && hit.status === 'active') return true;
+    } catch (e) {
+      // no romper por errores puntuales de listado
+    }
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  return false;
+}
+
+
 
 // ------------------ Creación de proyecto ------------------
 
+/**
+ * Crea proyecto en Construction Admin API (3LO).
+ * - Resuelve accountId desde hubId ("b.{accountGuid}") si hace falta.
+ * - Maneja conflicto de nombre con políticas de reintento.
+ * - (Best-effort) intenta activar Docs. Si el endpoint no existe en el tenant, continúa.
+ * - Espera aprovisionamiento en Data Management.
+ */
 async function createProject({
   hubId,
   accountId,
@@ -161,13 +151,13 @@ async function createProject({
   classification = 'production',
   startDate,
   endDate,
-  onNameConflict = 'suffix-timestamp'
+  onNameConflict = 'suffix-timestamp' // 'fail' | 'suffix-timestamp'
 }) {
   const accId = (accountId || (hubId || '').replace(/^b\./, '') || '').trim();
   if (!accId) throw new Error('createProject: accountId|hubId es obligatorio');
   if (!name) throw new Error('createProject: name es obligatorio');
 
-  const payload = {
+  const payloadBase = {
     name,
     classification,
     startDate: startDate || new Date().toISOString().slice(0, 10),
@@ -176,66 +166,94 @@ async function createProject({
     type
   };
 
-  // 1) Crear en Admin API con manejo 409 -> renombrar con sufijo
-  let created;
-  try {
-    created = await apsUser.apiPost(
-      `/construction/admin/v1/accounts/${encodeURIComponent(accId)}/projects`,
-      payload
-    );
-  } catch (err) {
-    const status = err?.response?.status;
-    if (status === 409 && onNameConflict !== 'fail') {
-      const ts = (vars?.code || '').toString().padStart(3, '0') || Date.now().toString().slice(-6);
-      const retryName = `${name}-${ts}`;
-      WARN('409 nombre duplicado. Reintentando con:', retryName);
-      const retryPayload = { ...payload, name: retryName };
-      created = await apsUser.apiPost(
+  // helper para generar nombres únicos
+  const ts6 = () => Date.now().toString().slice(-6);
+  const rnd6 = () => Math.random().toString().slice(2, 8);
+  const makeRetryName = (base) => {
+    if (onNameConflict === 'suffix-timestamp') return `${base}-${ts6()}`;
+    // fallback siempre único
+    return `${base}-${ts6()}-${rnd6()}`;
+  };
+
+  // intentos: 1 (nombre original) + 2 reintentos con sufijos únicos
+  const maxAttempts = (onNameConflict === 'fail') ? 1 : 3;
+  let attempt = 0;
+  let lastErr;
+
+  while (attempt < maxAttempts) {
+    const attemptName = attempt === 0 ? payloadBase.name : makeRetryName(name);
+    const payload = { ...payloadBase, name: attemptName };
+
+    try {
+      const created = await apsUser.apiPost(
         `/construction/admin/v1/accounts/${encodeURIComponent(accId)}/projects`,
-        retryPayload
+        payload
       );
-    } else {
-      throw err;
+
+      // Resolver Admin projectId (202/Location o body.id)
+      let projectAdminId =
+        created?.id ||
+        created?.data?.id ||
+        created?.projectId ||
+        (created?.links?.self && created.links.self.split('/').pop());
+
+      if (!projectAdminId && created?.links?.self) {
+        const data = await apsUser.apiGet(created.links.self);
+        if (data?.id) projectAdminId = data.id;
+      }
+      if (!projectAdminId) throw new Error('No se pudo resolver el projectId de Admin tras la creación');
+
+      // (Best-effort) Activar Docs: si el endpoint no existe en el tenant (404), no bloquea
+      try {
+        await activateDocs(projectAdminId);
+      } catch (e) {
+        const st = e?.response?.status;
+        if (st === 404) {
+          console.log('[ACC][activateDocs] endpoint no disponible en este tenant. Continuamos.');
+        } else {
+          // otros errores: también continuamos (best-effort)
+          console.log('[ACC][activateDocs] best-effort, continuar. Motivo:', st || e.message);
+        }
+      }
+
+      // Esperar aprovisionamiento en Data Management
+      const hubIdDM = ensureB(accId);
+      const projectIdDM = ensureB(projectAdminId);
+      await dm.waitUntilDmProjectExists(hubIdDM, projectIdDM);
+
+      // Metadatos DM (hub + región/topFolders, si se puede)
+      let dmMeta = {};
+      try {
+        const tf = await dm.getTopFoldersByProjectId(projectIdDM);
+        dmMeta = { hubIdDM: tf.hubId, projectIdDM, hubRegion: tf.hubRegion };
+      } catch {
+        dmMeta = { hubIdDM, projectIdDM };
+      }
+
+      return {
+        ok: true,
+        accountId: accId,
+        projectId: projectAdminId, // Admin GUID sin 'b.'
+        name: payload.name,
+        dm: dmMeta
+      };
+    } catch (err) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.errors?.[0]?.detail || '';
+      if (status === 409 && attempt < maxAttempts - 1 && onNameConflict !== 'fail') {
+        attempt++;
+        console.warn('[ACC] 409 nombre duplicado. Reintentando con sufijo único… detalle:', detail);
+        continue;
+      }
+      lastErr = err;
+      break;
     }
   }
 
-  // Normalizamos el id (GET si hace falta)
-  let pid =
-    created?.id ||
-    created?.data?.id ||
-    created?.projectId ||
-    (created?.links?.self && created.links.self.split('/').pop());
-  if (!pid && created?.links?.self) {
-    const info = await apsUser.apiGet(created.links.self);
-    pid = info?.id || null;
-  }
-  if (!pid) throw new Error('No se pudo resolver el projectId de Admin tras la creación');
-
-  // 2) Activar Docs (best-effort)
-  await activateDocs(pid);
-
-  // 3) Esperar a que exista en Data Management
-  const hubIdDM = ensureB(accId);
-  const projectIdDM = ensureB(pid);
-  await dm.waitUntilDmProjectExists(hubIdDM, projectIdDM);
-
-  // 4) Metadata DM útil
-  let dmMeta = {};
-  try {
-    const tf = await dm.getTopFoldersByProjectId(projectIdDM);
-    dmMeta = { hubIdDM: tf.hubId, projectIdDM, hubRegion: tf.hubRegion };
-  } catch {
-    dmMeta = { hubIdDM, projectIdDM };
-  }
-
-  return {
-    ok: true,
-    accountId: accId,
-    projectId: pid, // Admin GUID
-    name: created?.name || payload.name,
-    dm: dmMeta
-  };
+  // si llegamos aquí, no pudimos crear
+  throw (lastErr || new Error('createProject: fallo desconocido creando proyecto'));
 }
+
 
 // ------------------ Aplicar plantilla de carpetas ------------------
 

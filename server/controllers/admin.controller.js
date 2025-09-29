@@ -1,9 +1,9 @@
 // controllers/admin.controller.js
 
 const templates = require('../services/admin.template.service');
-const accAdmin  = require('../services/admin.acc.service');   // usa el unificado 3LO+DM
-const spAdmin   = require('../services/admin.sp.service');
-const twinSvc   = require('../services/admin.twin.service');
+const accAdmin = require('../services/admin.acc.service');   // usa el unificado 3LO+DM
+const spAdmin = require('../services/admin.sp.service');
+const twinSvc = require('../services/admin.twin.service');
 
 async function getTemplate(req, res, next) {
   try {
@@ -82,7 +82,7 @@ async function applyTwin(req, res, next) {
       resolvedName: name
     });
 
-    const spRes  = await spAdmin.applyTemplateToSite({ siteId, siteUrl, template: tpl, resolvedName: name });
+    const spRes = await spAdmin.applyTemplateToSite({ siteId, siteUrl, template: tpl, resolvedName: name });
 
     const link = await twinSvc.saveLink({
       twinId: twinId || `${projectId}__${spRes.siteId}`,
@@ -118,11 +118,11 @@ async function createAccProject(req, res, next) {
   try {
     const {
       hubId, accountId,
-      templateId, template,      // admite cualquiera de los dos (tu JSON local)
+      templateId, template,
       vars = {},
       code, name,
-      memberEmail,               // 👈 NUEVO: miembro a invitar (p.ej. support@labit.es)
-      onNameConflict = 'suffix-timestamp'
+      onNameConflict = 'suffix-timestamp',
+      memberEmail // 👈 nuevo
     } = req.body || {};
 
     const tplKey = templateId || template;
@@ -135,30 +135,35 @@ async function createAccProject(req, res, next) {
 
     const resolvedName = name || templates.expandName(tpl, vars);
 
-    // 1) Crea el proyecto en ACC (+ activa Docs best-effort + espera DM)
+    // 1) Crea proyecto en ACC
     const created = await accAdmin.createProject({
       hubId, accountId, name: resolvedName, code: code || vars.code, vars,
       type: vars.type, classification: vars.classification || 'production',
       onNameConflict
     });
 
-    // 1.1) (Opcional recomendado) invitar miembro para visibilidad inmediata en Docs
-    let memberResult = null;
+    // 2) (best-effort) invitar miembro para que aparezca en Docs
+    let member = null;
     if (memberEmail) {
-      memberResult = await accAdmin.ensureProjectMember({
-        accountId: created.accountId,
-        projectId: created.projectId,
-        email: memberEmail,
-        makeProjectAdmin: true,            // por defecto le damos Project Admin
-        grantDocs: 'admin'                 // acceso Docs admin
-      });
+      try {
+        member = await accAdmin.ensureProjectMember({
+          accountId: created.accountId,
+          projectId: created.projectId,
+          email: memberEmail,
+          makeProjectAdmin: true,
+          grantDocs: 'admin'
+        });
+      } catch (e) {
+        console.warn('[ACC][controller] ensureProjectMember warning:', e?.response?.data || e.message);
+        member = { ok: false, error: 'invite_failed' };
+      }
     }
 
-    // 2) Aplica tu plantilla en Docs
+    // 3) Aplica plantilla en Docs
     const applied = await accAdmin.applyTemplateToProject({
       accountId: created.accountId,
-      projectId: created.projectId,             // Admin GUID
-      projectIdDM: created.dm.projectIdDM,      // 'b.{projectGuid}'
+      projectId: created.projectId,
+      projectIdDM: created.dm.projectIdDM,
       template: tpl,
       resolvedName
     });
@@ -170,13 +175,13 @@ async function createAccProject(req, res, next) {
       projectId: created.projectId,
       projectIdDM: created.dm.projectIdDM,
       name: created.name,
-      member: memberResult,
+      ...(member ? { member } : {}),
       applied
     });
   } catch (e) {
     console.error('createAccProject ERROR:', e);
     const status = e?.response?.status;
-    const data   = e?.response?.data;
+    const data = e?.response?.data;
     if (status && data) return res.status(400).json({ error: data });
     next(e);
   }
