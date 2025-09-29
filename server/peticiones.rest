@@ -230,37 +230,6 @@ Content-Type: application/json
   "memberEmail": "support@labit.es"
 }
 
-### Crear proyecto ACC desde cero SIN plantilla
-POST {{host}}{{urlAdmin}}/acc/projects/create
-Content-Type: application/json
-
-{
-  "hubId": "b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
-  "template": "labit-standard-v1",
-  "vars": { "code": "002", "name": "Proyecto Libre", "type": "Other" }
-}
-
-### Crear solo clonando plantilla de ACC (sin carpetas propias)
-POST {{host}}{{urlAdmin}}/acc/projects/create
-Content-Type: application/json
-
-{
-  "accountId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
-  "templateId": "labit-standard-v1",
-  "vars": { "code": "003", "name": "Solo Clonado", "type": "Other" }
-}
-
-
-### Crear Proyecto
-POST {{host}}{{urlAdmin}}/acc/projects/create
-Content-Type: application/json
-
-{
-  "accountId": "{{ACC_ACCOUNT_ID}}",
-  "templateId": "labit-standard-v1",
-  "vars": { "code": "001", "name": "Demo" }
-}
-
 ### Crear sitio SP desde cero + aplicar plantilla
 POST {{host}}{{urlAdmin}}/sp/sites/create
 Content-Type: application/json
