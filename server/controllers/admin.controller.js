@@ -4,6 +4,7 @@ const templates = require('../services/admin.template.service');
 const accAdmin = require('../services/admin.acc.service');   // usa el unificado 3LO+DM
 const spAdmin = require('../services/admin.sp.service');
 const twinSvc = require('../services/admin.twin.service');
+const logger = require('../helpers/logger');
 
 async function getTemplate(req, res, next) {
   try {
@@ -154,8 +155,9 @@ async function createAccProject(req, res, next) {
           grantDocs: 'admin'
         });
       } catch (e) {
-        console.warn('[ACC][controller] ensureProjectMember warning:', e?.response?.data || e.message);
-        member = { ok: false, error: 'invite_failed' };
+        const msg = e?.response?.data?.detail || e?.message || 'invite_failed';
+        logger.mk('ACC-CTRL').warn('ensureProjectMember warning:', msg);
+        member = { ok: false, error: msg };
       }
     }
 
@@ -179,11 +181,12 @@ async function createAccProject(req, res, next) {
       applied
     });
   } catch (e) {
-    console.error('createAccProject ERROR:', e);
-    const status = e?.response?.status;
-    const data = e?.response?.data;
-    if (status && data) return res.status(400).json({ error: data });
-    next(e);
+    const status = e?.response?.status || 500;
+    const detail =
+      e?.response?.data?.errors?.map(x => x.detail).join(' | ') ||
+      e?.response?.data?.detail ||
+      e.message;
+    return res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
   }
 }
 

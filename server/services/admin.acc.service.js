@@ -12,9 +12,11 @@
 const apsUser = require('../clients/apsUserClient');
 const dm = require('./acc.service');
 const templates = require('./admin.template.service');
+const { mk } = require('../helpers/logger');
+const log = mk('ACC');
 
-const LOG = (...a) => console.log('[ACC]', ...a);
-const WARN = (...a) => console.warn('[ACC]', ...a);
+const LOG = (...a) => log.info(...a);
+const WARN = (...a) => log.warn(...a);
 
 // ------------------ Utils ------------------
 
@@ -25,38 +27,33 @@ function ensureB(id) {
 
 // ------------------ Activar Docs (best-effort) ------------------
 
+let DOCS_ACTIVATION_SUPPORTED; // undefined = desconocido, false = no existe en tenant, true = soportado
+
 async function activateDocs(projectAdminId) {
-  // En varios tenants este endpoint no está expuesto → devolver sin bloquear si todo da 404
-  const tried = [];
-  const candidates = [
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=doc_mgmt`,
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=document_management`,
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=docs`,
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}:activate?service=doc_mgmt`,
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}:activate?service=document_management`,
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}:activate?service=docs`,
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/actions:activate?service=doc_mgmt`,
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/actions:activate?service=document_management`,
-    `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/actions:activate?service=docs`
-  ];
+  // Canonical (si no existe en el tenant, no insistimos más en siguientes llamadas)
+  const url = `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=doc_mgmt`;
 
-  for (const url of candidates) {
-    try {
-      await apsUser.apiPost(url, {}); // 200/202/204 esperado si existe
-      LOG('[activateDocs] OK via', url);
-      return { ok: true, via: url };
-    } catch (e) {
-      const s = e?.response?.status;
-      if (s === 404) {
-        console.log('[ACC][activateDocs] endpoint no disponible en este tenant (404). Continuamos.');
-      } else {
-        console.log('[ACC][activateDocs] best-effort, continuar. Motivo:', s || e.message);
-      }
-    }
-
+  if (DOCS_ACTIVATION_SUPPORTED === false) {
+    log.debug('[activateDocs] omitido (cache: no soportado en tenant)');
+    return { ok: true, skipped: true, via: null };
   }
-  LOG('[activateDocs] endpoint no disponible en este tenant (solo 404). Continuamos sin bloquear.');
-  return { ok: true, skipped: true, tried };
+
+  try {
+    await apsUser.apiPost(url, {});
+    DOCS_ACTIVATION_SUPPORTED = true;
+    log.info('[activateDocs] ok via', url);
+    return { ok: true, via: url };
+  } catch (e) {
+    const s = e?.response?.status;
+    if (s === 404) {
+      DOCS_ACTIVATION_SUPPORTED = false;
+      log.info('[activateDocs] no disponible en este tenant (404). No se volverá a intentar.');
+      return { ok: true, skipped: true, via: url };
+    }
+    // otros errores: best-effort
+    log.warn('[activateDocs] continua (best-effort). Motivo:', s || e.message);
+    return { ok: true, skipped: true, via: url, status: s };
+  }
 }
 
 // ------------------ Miembros de Proyecto ------------------
@@ -90,9 +87,17 @@ async function ensureProjectMember({
   // 🚩 Este es el endpoint que acepta tu tenant:
   const url = `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users`;
   try {
-    const resp = await apsUser.apiPost(url, { email, products }); // <-- forma correcta
-    // Opcional: esperar a que quede "active"
+    await apsUser.apiPost(url, { email, products }); // <-- forma correcta
+
+    // Esperar a que quede "active"
     await waitForProjectUserActive(projectId, email, { maxTries: 10, delayMs: 2000 });
+
+    log.info(
+      '[ensureProjectMember] invitado',
+      email,
+      'con',
+      products.map(p => `${p.key}:${p.access}`).join(',')
+    );
 
     return {
       ok: true,
@@ -102,7 +107,15 @@ async function ensureProjectMember({
   } catch (e) {
     const st = e?.response?.status;
     const data = e?.response?.data;
-    console.warn('[ACC][ensureProjectMember] fallo', st, 'via', url, '->', data || e.message);
+    log.warn(
+      '[ensureProjectMember] fallo',
+      st,
+      '->',
+      Array.isArray(data?.errors)
+        ? data.errors.map(x => x.detail).join(' | ')
+        : (data?.detail || e.message)
+    );
+
     return {
       ok: false,
       email,
@@ -119,18 +132,20 @@ async function ensureProjectMember({
 async function waitForProjectUserActive(projectId, email, { maxTries = 8, delayMs = 1500 } = {}) {
   for (let i = 0; i < maxTries; i++) {
     try {
-      const list = await apsUser.apiGet(`/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users?limit=1000&offset=0`);
-      const hit = (list?.results || []).find(u => (u.email || '').toLowerCase() === email.toLowerCase());
+      const list = await apsUser.apiGet(
+        `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users?limit=1000&offset=0`
+      );
+      const hit = (list?.results || []).find(
+        u => (u.email || '').toLowerCase() === (email || '').toLowerCase()
+      );
       if (hit && hit.status === 'active') return true;
-    } catch (e) {
+    } catch {
       // no romper por errores puntuales de listado
     }
     await new Promise(r => setTimeout(r, delayMs));
   }
   return false;
 }
-
-
 
 // ------------------ Creación de proyecto ------------------
 
@@ -211,7 +226,6 @@ async function createProject({
         if (st === 404) {
           console.log('[ACC][activateDocs] endpoint no disponible en este tenant. Continuamos.');
         } else {
-          // otros errores: también continuamos (best-effort)
           console.log('[ACC][activateDocs] best-effort, continuar. Motivo:', st || e.message);
         }
       }
@@ -219,7 +233,13 @@ async function createProject({
       // Esperar aprovisionamiento en Data Management
       const hubIdDM = ensureB(accId);
       const projectIdDM = ensureB(projectAdminId);
-      await dm.waitUntilDmProjectExists(hubIdDM, projectIdDM);
+      await dm.waitUntilDmProjectExists(hubIdDM, projectIdDM, {
+        timeoutMs: 60_000,
+        silentRetries: true,        // <-- reduce ruido de logs mientras reintenta
+        onRetry: (i, max) => log.debug(`Esperando aprovisionamiento DM… intento ${i}/${max}`)
+      });
+
+      log.debug('DM provisioning listo para', { accountId: accId, projectId: projectAdminId });
 
       // Metadatos DM (hub + región/topFolders, si se puede)
       let dmMeta = {};
@@ -242,7 +262,7 @@ async function createProject({
       const detail = err?.response?.data?.errors?.[0]?.detail || '';
       if (status === 409 && attempt < maxAttempts - 1 && onNameConflict !== 'fail') {
         attempt++;
-        console.warn('[ACC] 409 nombre duplicado. Reintentando con sufijo único… detalle:', detail);
+        log.warn('409 nombre duplicado → reintento con sufijo único. detalle:', detail || '(sin detalle)');
         continue;
       }
       lastErr = err;
@@ -253,7 +273,6 @@ async function createProject({
   // si llegamos aquí, no pudimos crear
   throw (lastErr || new Error('createProject: fallo desconocido creando proyecto'));
 }
-
 
 // ------------------ Aplicar plantilla de carpetas ------------------
 
@@ -277,7 +296,13 @@ async function applyTemplateToProject({
     hubIdDM = tf.hubId || hubIdDM;
   } catch (e) {
     try {
-      await dm.waitUntilDmProjectExists(hubIdDM, pidDM, { timeoutMs: 60_000 });
+      // ⚠️ FIX: usar pidDM (no projectIdDM) para el segundo parámetro
+      await dm.waitUntilDmProjectExists(hubIdDM, pidDM, {
+        timeoutMs: 60_000,
+        silentRetries: true,
+        onRetry: (i, max) => log.debug(`Esperando aprovisionamiento DM… intento ${i}/${max}`)
+      });
+
       await dm.getTopFoldersByProjectId(pidDM);
     } catch (e2) {
       throw e;
