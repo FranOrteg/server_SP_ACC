@@ -1,263 +1,201 @@
-@host=http://localhost:3000
+@host = http://localhost:3000
 
-## Rutas ##
-@urlHealth=/api/health
-@urlSP=/api/sp
-@urlBridge=/api/bridge
-@urlACC=/api/acc
-@urlAdmin=/api/admin
+### BASE PATHS
+@urlHealth = /api/health
+@urlSP     = /api/sp
+@urlACC    = /api/acc
+@urlAdmin  = /api/admin
+@urlBridge = /api/bridge
+@urlAudit  = /api/audit
 
-### TEMP VARIABLES ###
-@PROJECT_ID=b.76947f01-cc26-47db-9681-fff27e5430ce
-@FOLDER_ID=urn:adsk.wipprod:fs.folder:co._HMyOfTySzGn6hpRrYrdvA
+### TENANT / IDs (ajusta a tu entorno)
+@SPO_TENANT_HOST = labitgroup.sharepoint.com
 
-@HUB_ID=b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
+@HUB_ID         = b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825
+@ACC_ACCOUNT_ID = 1bb899d4-8dd4-42d8-aefd-6c0e35acd825
+@PROJECT_ID     = b.76947f01-cc26-47db-9681-fff27e5430ce
 
-@SP_DRIVE_ID=b!DQOmTDWg4UCWLUzjVxfVHsgBQQSZtqtIhu-TIGdbQBu81Wu7u7k0S6njwic8UIS3
-@SP_ITEM_ID=01KWI7RKN6Y2GOVW7725BZO354PWSELRRZ
-@NOMBRE_DESTINO_OPCIONAL=test
+@SP_SITE_URL = https://{{SPO_TENANT_HOST}}/sites/LBAN0X
+@SP_DRIVE_ID = b!DQOmTDWg4UCWLUzjVxfVHsgBQQSZtqtIhu-TIGdbQBu81Wu7u7k0S6njwic8UIS3
+@SP_ITEM_ID  = 01KWI7RKN6Y2GOVW7725BZO354PWSELRRZ
 
-### VARS AUDIT ###
-@urlAUDIT=/api/audit
-@SITE_ID=                             
-@AUDIT_REPORT_ID=rep_20250924T112457_w5du
+@ACC_FOLDER_ID = urn:adsk.wipprod:fs.folder:co._HMyOfTySzGn6hpRrYrdvA
 
-@SPO_TENANT_HOST=labitgroup.sharepoint.com
+### ADMIN / TEMPLATES
+@TEMPLATE_ID = labit-standard-v1
+@CODE = 001
+@NAME = Demo
+@TWIN_ID = PRJ-001-DEMO
 
-@ACC_ACCOUNT_ID=1bb899d4-8dd4-42d8-aefd-6c0e35acd825
-
-
-##############
-### HEALTH ###
-##############
+################################################################################
+# HEALTH
+################################################################################
 
 GET {{host}}{{urlHealth}}
 
-##################
-### SHAREPOINT ###
-##################
+################################################################################
+# SHAREPOINT (descubrimiento rápido)
+################################################################################
 
-### 0) Confirma hostname del tenant
-GET {{host}}/api/sp/root
+### (SP) 0) Confirmar root del tenant
+GET {{host}}{{urlSP}}/root
 
-### 1) Listar raíz de la biblioteca
+### (SP) 1) Buscar sitio por texto (displayName / url)
+GET {{host}}{{urlSP}}/find-sites?q={{NAME}}
+
+### (SP) 2) Listar drives de un sitio (por URL directa)
+GET {{host}}{{urlSP}}/drives-by-url?url={{SP_SITE_URL}}
+
+### (SP) 3) Resolver siteId desde URL
+GET {{host}}{{urlSP}}/siteId?url={{SP_SITE_URL}}
+
+### (SP) 4) Listar raíz de una biblioteca concreta
 GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}
 
-### 2) Busca el sitio (prueba con varias claves)
-GET {{host}}{{urlSP}}/find-sites?q=LBAN0X
-
-### 3) Lista drives directamente por URL (sin siteId)
-GET {{host}}{{urlSP}}/drives-by-url?url=https://labitgroup.sharepoint.com/sites/LBAN0X
-
-### 4) (Opcional) Si quieres el siteId explícito
-GET {{host}}{{urlSP}}/siteId?url=https://labitgroup.sharepoint.com/sites/LBAN0X 
-
-###
+### (SP) 5) Listar carpeta por path dentro del drive
 GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=1_COMM
 
+### Comprobacion de token correcto
+GET {{host}}{{urlAdmin}}/sp/diag/tenant
 
-###########
-### ACC ###
-###########
+################################################################################
+# ACC (descubrimiento rápido)
+################################################################################
 
-### 0.0) Limpiar Tokens
-### GET {{host}}{{urlACC}}/auth/logout
-
-### 0) Login con scopes de escritura (una sola vez por sesión)
-### GET {{host}}{{urlACC}}/auth/login?scopes=data:read%20data:write%20data:create%20account:read%20viewables:read%20openid%20offline_access&prompt=login
-
-### 1) Hubs
+### (ACC) 0) Hubs
 GET {{host}}{{urlACC}}/hubs
 
-### 2) Proyectos (elige uno y copia su "id")
+### (ACC) 1) Proyectos del hub
 GET {{host}}{{urlACC}}/projects?hubId={{HUB_ID}}&all=true&limit=200
 
-### 3) Top folders del proyecto (coge el folderId de "Project Files" o el que prefieras)
+### (ACC) 2) Top folders del proyecto
 GET {{host}}{{urlACC}}/top-folders?hubId={{HUB_ID}}&projectId={{PROJECT_ID}}
 
-### 4) (opcional) Lista contenidos de una carpeta destino
-GET {{host}}{{urlACC}}/list?projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&all=true&limit=200
+### (ACC) 3) (opcional) Listar una carpeta
+GET {{host}}{{urlACC}}/list?projectId={{PROJECT_ID}}&folderId={{ACC_FOLDER_ID}}&all=true&limit=200
 
-### 5) SharePoint: elige driveId + itemId de tu archivo origen
-# (ya los tienes listando /api/sp/list?driveId=... )
+################################################################################
+# ADMIN · Templates
+################################################################################
 
-### 6) Copia SP → ACC
-GET {{host}}{{urlBridge}}/sp-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&fileName={{NOMBRE_DESTINO_OPCIONAL}}
+### Ver plantilla
+GET {{host}}{{urlAdmin}}/templates/{{TEMPLATE_ID}}
 
+################################################################################
+# ADMIN · Apply SOLO ACC/SP
+################################################################################
 
-
-
-### WEB LOGIN (si quieres probar desde navegador) ###
-### http://localhost:3000/api/acc/auth/login?scopes=data:read&prompt=login ###
-
-
-### 7) Copia RECURSIVA SP → ACC (dry-run primero)
-POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&mode=upsert&dryRun=true
-
-#########################
-### 8) Ejecutar Real ####
-#########################
-POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{FOLDER_ID}}&mode=upsert&dryRun=false
-
-
-### 1) Dame el folderId de Project Files
-GET {{host}}/api/acc/folder-by-path?projectId={{PROJECT_ID}}&path=/Project%20Files
-
-### 2) Crea (si no existe) la carpeta "09 SP" bajo Project Files y devuelve su id
-GET {{host}}/api/acc/folder-by-path?projectId={{PROJECT_ID}}&path=/Project%20Files/09%20SP&create=true
-
-
-### Árbol completo del proyecto (solo carpetas)
-GET {{host}}/api/acc/tree?projectId={{PROJECT_ID}}
-
-### Árbol incluyendo ficheros (puede ser grande)
-GET {{host}}/api/acc/tree?projectId={{PROJECT_ID}}&includeItems=true
-
-### Limitar profundidad (p.ej. hasta 3 niveles)
-GET {{host}}/api/acc/tree?projectId={{PROJECT_ID}}&maxDepth=3
-
-
-### FolderID de la carpeta creada en projects Files : urn:adsk.wipprod:fs.folder:co.OTrCYRk0Rtetbr5nqktV2w
-
-GET {{host}}{{urlACC}}/project-info?projectId={{PROJECT_ID}}
-
-### Obtener FolderID por path
-GET {{host}}{{urlACC}}/folderByPath?projectId={{PROJECT_ID}}&path=/Project%20Files/root/1_COMM&create=false
-
-
-#############
-### Audit ###
-#############
-
-### AUDIT 1a: ignorar drift de tiempo por completo (no notas)
-GET {{host}}{{urlAUDIT}}/sp-to-acc?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{FOLDER_ID}}&since=2025-09-01T00:00:00Z&mtimePolicy=ignore
-
-### AUDIT 1b: drift estricto (cuenta como discrepancia si supera 2 minutos)
-GET {{host}}{{urlAUDIT}}/sp-to-acc?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{FOLDER_ID}}&since=2025-09-01T00:00:00Z&mtimePolicy=strict&mtimeSkewSec=120
-
-
-### AUDIT 2: obtener el reporte por id
-GET {{host}}{{urlAUDIT}}/report/{{AUDIT_REPORT_ID}}
-
-### AUDIT 3: descargar el CSV
-GET {{host}}{{urlAUDIT}}/report/{{AUDIT_REPORT_ID}}/csv
-
-### AUDIT 4: reparar difs (missing/size/hash)
-POST {{host}}{{urlAUDIT}}/sp-to-acc/repair
-Content-Type: application/json
-
-{
-  "reportId": "{{AUDIT_REPORT_ID}}",
-  "projectId": "{{PROJECT_ID}}",
-  "driveId": "{{SP_DRIVE_ID}}",
-  "includeStates": ["MISSING_IN_ACC","SIZE_MISMATCH","HASH_MISMATCH"],
-  "maxConcurrency": 4
-}
-
-### AUDIT 5: sitio completo (usa siteId)
-GET {{host}}{{urlAUDIT}}/sp-to-acc?siteId={{SITE_ID}}&projectId={{PROJECT_ID}}&since=2025-09-01T00:00:00Z
-
-### AUDIT (listar últimos 50)
-GET {{host}}{{urlAUDIT}}/reports
-
-### Re-audit del report anterior
-GET {{host}}{{urlAUDIT}}/report/{{AUDIT_REPORT_ID}}/re-audit
-
-### SYNC (segmento SP -> ACC): audita + repara
-POST {{host}}{{urlBridge}}/sync-sp-segment?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{FOLDER_ID}}&since=2025-09-01T00:00:00Z&hashPolicy=auto&mtimePolicy=ignore&mtimeSkewSec=120&withMeta=true&maxConcurrency=4
-
-#############
-### ADMIN ###
-#############
-
-### Ver plantilla (asegúrate del nombre del archivo)
-GET {{host}}/api/admin/templates/labit-standard-v1
-
-### Aplicar solo en ACC (proyecto ya existe)
-POST {{host}}/api/admin/apply/acc
+### (ACC) Aplicar plantilla en proyecto existente (canónico)
+POST {{host}}{{urlAdmin}}/acc/apply
 Content-Type: application/json
 
 {
   "projectId": "{{PROJECT_ID}}",
-  "templateId": "labit-standard-v1",
-  "vars": { "code": "001", "name": "Demo" }
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { "code": "{{CODE}}", "name": "{{NAME}}" },
+  "accountId": "{{ACC_ACCOUNT_ID}}"
 }
 
-### Aplicar solo en SP (sitio ya existe)
-POST {{host}}/api/admin/apply/sp
+# Legacy equivalente (si lo necesitas puntualmente):
+# POST {{host}}{{urlAdmin}}/apply/acc
+
+### (SP) Aplicar plantilla en sitio existente (canónico)
+POST {{host}}{{urlAdmin}}/sp/sites/apply
 Content-Type: application/json
 
 {
-  "siteUrl": "https://labitgroup.sharepoint.com/sites/LBAN0X",
-  "templateId": "labit-standard-v1",
-  "vars": { "code": "001", "name": "Demo" }
+  "siteUrl": "{{SP_SITE_URL}}",
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { "code": "{{CODE}}", "name": "{{NAME}}" }
 }
 
-### Crear/enlazar twin (aplica en ambos y guarda el vínculo)
-POST {{host}}/api/admin/twin/apply
-Content-Type: application/json
+# Legacy equivalente:
+# POST {{host}}{{urlAdmin}}/apply/sp
 
-{
-  "twinId": "PRJ-001-DEMO",
-  "projectId": "{{PROJECT_ID}}",
-  "siteUrl": "https://labitgroup.sharepoint.com/sites/LBAN0X",
-  "templateId": "labit-standard-v1",
-  "vars": { "code": "001", "name": "Demo" }
-}
+################################################################################
+# ADMIN · Creación DESDE CERO
+################################################################################
 
-### Estado del twin
-GET {{host}}/api/admin/twin/PRJ-001-DEMO/status
-
-### Listar twins guardados
-GET {{host}}/api/admin/twin
-
-###############################
-###############################
-###############################
-##### CREACIÓN DESDE CERO #####
-###############################
-###############################
-###############################
-
-### Crear proyecto ACC desde cero + aplicar plantilla
+### (ACC) Crear proyecto + aplicar plantilla + (opcional) invitar miembro
 POST {{host}}{{urlAdmin}}/acc/projects/create
 Content-Type: application/json
 
 {
-  "hubId": "b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
-  "template": "labit-standard-v1",
+  "hubId": "{{HUB_ID}}",
+  "templateId": "{{TEMPLATE_ID}}",
   "vars": { "code": "002", "name": "Proyecto Libreeeee", "type": "Other", "classification": "production" },
-  "memberEmail": "support@labit.es"
+  "memberEmail": "support@labit.es",
+  "onNameConflict": "suffix-timestamp"
 }
 
-### Crear sitio SP desde cero + aplicar plantilla
+### (SP) Crear sitio + aplicar plantilla
 POST {{host}}{{urlAdmin}}/sp/sites/create
 Content-Type: application/json
 
 {
-  "templateId": "labit-standard-v1",
-  "vars": { "code": "001", "name": "Demo" },
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { "code": "{{CODE}}", "name": "{{NAME}}" },
   "type": "CommunicationSite",
-  "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-001-DEMO"
+  "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-{{CODE}}-{{NAME}}",
+  "description": "Sitio del proyecto PRJ-{{CODE}}"
 }
 
-### Crear TWIN (ACC+SP) + aplicar + guardar vínculo
+################################################################################
+# ADMIN · Twin (ACC <-> SP)
+################################################################################
+
+### (Twin) Aplicar sobre ambos (proyecto y sitio YA existentes)
+POST {{host}}{{urlAdmin}}/twin/apply
+Content-Type: application/json
+
+{
+  "twinId": "{{TWIN_ID}}",
+  "projectId": "{{PROJECT_ID}}",
+  "siteUrl": "{{SP_SITE_URL}}",
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { "code": "{{CODE}}", "name": "{{NAME}}" },
+  "accountId": "{{ACC_ACCOUNT_ID}}"
+}
+
+### (Twin) Crear ambos desde cero + aplicar + guardar vínculo
 POST {{host}}{{urlAdmin}}/twin/create
 Content-Type: application/json
 
 {
   "hubId": "{{HUB_ID}}",
-  "templateId": "labit-standard-v1",
-  "vars": { "code": "001", "name": "Demo" },
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { "code": "{{CODE}}", "name": "{{NAME}}" },
   "sp": {
     "type": "CommunicationSite",
-    "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-001-DEMO"
+    "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-{{CODE}}-{{NAME}}"
   },
-  "twinId": "PRJ-001-DEMO"
+  "twinId": "{{TWIN_ID}}",
+  "memberEmail": "support@labit.es"
 }
 
-### COMPROBACION TEMPORAL DEL ACOUNT ADMIN AAA #####
-####################################### SONDAS #####
+### (Twin) Estado
+GET {{host}}{{urlAdmin}}/twin/{{TWIN_ID}}/status
+
+### (Twin) Listado
+GET {{host}}{{urlAdmin}}/twin
+
+################################################################################
+# BRIDGE / AUDIT (opcionales rápidos)
+################################################################################
+
+### (Bridge) Copia fichero SP → ACC
+GET {{host}}{{urlBridge}}/sp-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{ACC_FOLDER_ID}}&fileName={{NAME}}
+
+### (Bridge) Copia recursiva (dry-run)
+POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{ACC_FOLDER_ID}}&mode=upsert&dryRun=true
+
+### (Audit) Comparar SP vs ACC desde fecha
+GET {{host}}{{urlAudit}}/sp-to-acc?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{ACC_FOLDER_ID}}&since=2025-09-01T00:00:00Z&mtimePolicy=ignore
+
+
+################################################################################
+# COMPROBACION TEMPORAL DEL ACOUNT ADMIN AAA
+################################################################################
 
 ### Logout ACC
 GET {{host}}/api/oauth/logout

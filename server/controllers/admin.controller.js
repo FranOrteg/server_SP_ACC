@@ -1,10 +1,51 @@
 // controllers/admin.controller.js
 
 const templates = require('../services/admin.template.service');
-const accAdmin = require('../services/admin.acc.service');   // usa el unificado 3LO+DM
-const spAdmin = require('../services/admin.sp.service');
-const twinSvc = require('../services/admin.twin.service');
-const logger = require('../helpers/logger');
+const accAdmin  = require('../services/admin.acc.service');   // unificado 3LO+DM
+const spAdmin   = require('../services/admin.sp.service');
+const twinSvc   = require('../services/admin.twin.service');
+const logger    = require('../helpers/logger');
+
+// ------------------------- Helpers locales -------------------------
+
+/** Normaliza accountId/hubId → GUID “pelado” (sin 'b.') */
+function normalizeAccountId(accountIdOrHubId) {
+  return (accountIdOrHubId || '').toString().replace(/^b\./, '');
+}
+
+/** Lee plantilla y expande nombre con vars; 404 si no existe */
+async function loadTemplateAndExpandName(templateKey, vars) {
+  const tpl = await templates.loadTemplate(templateKey);
+  if (!tpl) {
+    const err = new Error('template not found');
+    err.status = 404;
+    throw err;
+  }
+  return { tpl, name: templates.expandName(tpl, vars || {}) };
+}
+
+/** Mapea axios/error → { status, detail } */
+function mapError(e, fallback = 'internal_error') {
+  const status =
+    e?.status ||
+    e?.response?.status ||
+    500;
+
+  const detail =
+    // ACC típico
+    (e?.response?.data?.errors && Array.isArray(e.response.data.errors) &&
+      e.response.data.errors.map(x => x.detail).filter(Boolean).join(' | ')) ||
+    // SP típico
+    e?.response?.data?.error?.message ||
+    e?.response?.data?.ErrorMessage ||
+    e?.response?.data?.detail ||
+    e?.message ||
+    fallback;
+
+  return { status, detail };
+}
+
+// ------------------------- Templates -------------------------
 
 async function getTemplate(req, res, next) {
   try {
@@ -14,9 +55,11 @@ async function getTemplate(req, res, next) {
   } catch (e) { next(e); }
 }
 
+// ------------------------- Apply only: ACC -------------------------
+
 /**
- * Aplica plantilla SOLO en ACC (carpetas/permisos en Docs) sobre un proyecto EXISTENTE.
- * Nota: Construction Admin usa GUID “pelado”; Data Management necesita 'b.{guid}'.
+ * Aplica plantilla SOLO en ACC (Docs) sobre proyecto EXISTENTE.
+ * Construction Admin usa GUID “pelado”; Data Management necesita 'b.{guid}' (lo resuelve el servicio).
  */
 async function applyAcc(req, res, next) {
   try {
@@ -24,15 +67,12 @@ async function applyAcc(req, res, next) {
     if (!projectId || !templateId) {
       return res.status(400).json({ error: 'projectId y templateId son obligatorios' });
     }
-    const accId = (accountId || hubId || '').toString().replace(/^b\./, '');
+    const accId = normalizeAccountId(accountId || hubId);
     if (!accId) {
       return res.status(400).json({ error: 'accountId o hubId es obligatorio para aplicar carpetas en Docs' });
     }
 
-    const tpl = await templates.loadTemplate(templateId);
-    if (!tpl) return res.status(404).json({ error: 'template not found' });
-
-    const name = templates.expandName(tpl, vars);
+    const { tpl, name } = await loadTemplateAndExpandName(templateId, vars);
 
     const r = await accAdmin.applyTemplateToProject({
       accountId: accId,
@@ -42,8 +82,13 @@ async function applyAcc(req, res, next) {
     });
 
     res.json({ ok: true, projectId, accountId: accId, name, result: r });
-  } catch (e) { next(e); }
+  } catch (e) {
+    const { status, detail } = mapError(e, 'apply_acc_failed');
+    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
+  }
 }
+
+// ------------------------- Apply only: SP -------------------------
 
 async function applySp(req, res, next) {
   try {
@@ -51,14 +96,21 @@ async function applySp(req, res, next) {
     if (!(siteId || siteUrl) || !templateId) {
       return res.status(400).json({ error: 'siteId o siteUrl y templateId son obligatorios' });
     }
-    const tpl = await templates.loadTemplate(templateId);
-    if (!tpl) return res.status(404).json({ error: 'template not found' });
 
-    const name = templates.expandName(tpl, vars);
-    const r = await spAdmin.applyTemplateToSite({ siteId, siteUrl, template: tpl, resolvedName: name });
+    const { tpl, name } = await loadTemplateAndExpandName(templateId, vars);
+
+    const r = await spAdmin.applyTemplateToSite({
+      siteId, siteUrl, template: tpl, resolvedName: name
+    });
+
     res.json({ ok: true, siteId: r.siteId, name, result: r });
-  } catch (e) { next(e); }
+  } catch (e) {
+    const { status, detail } = mapError(e, 'apply_sp_failed');
+    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
+  }
 }
+
+// ------------------------- Apply both (Twin) -------------------------
 
 async function applyTwin(req, res, next) {
   try {
@@ -66,15 +118,12 @@ async function applyTwin(req, res, next) {
     if (!projectId || !(siteId || siteUrl) || !templateId) {
       return res.status(400).json({ error: 'projectId, siteId|siteUrl y templateId son obligatorios' });
     }
-    const accId = (accountId || hubId || '').toString().replace(/^b\./, '');
+    const accId = normalizeAccountId(accountId || hubId);
     if (!accId) {
       return res.status(400).json({ error: 'accountId o hubId es obligatorio para aplicar en ACC (Docs)' });
     }
 
-    const tpl = await templates.loadTemplate(templateId);
-    if (!tpl) return res.status(404).json({ error: 'template not found' });
-
-    const name = templates.expandName(tpl, vars);
+    const { tpl, name } = await loadTemplateAndExpandName(templateId, vars);
 
     const accRes = await accAdmin.applyTemplateToProject({
       accountId: accId,
@@ -83,7 +132,9 @@ async function applyTwin(req, res, next) {
       resolvedName: name
     });
 
-    const spRes = await spAdmin.applyTemplateToSite({ siteId, siteUrl, template: tpl, resolvedName: name });
+    const spRes = await spAdmin.applyTemplateToSite({
+      siteId, siteUrl, template: tpl, resolvedName: name
+    });
 
     const link = await twinSvc.saveLink({
       twinId: twinId || `${projectId}__${spRes.siteId}`,
@@ -94,8 +145,13 @@ async function applyTwin(req, res, next) {
     });
 
     res.json({ ok: true, name, link, acc: accRes, sp: spRes });
-  } catch (e) { next(e); }
+  } catch (e) {
+    const { status, detail } = mapError(e, 'apply_twin_failed');
+    res.status(status).json({ error: { status, detail } });
+  }
 }
+
+// ------------------------- Twin status/list -------------------------
 
 async function twinStatus(req, res, next) {
   try {
@@ -111,9 +167,7 @@ async function listTwins(_req, res, next) {
   } catch (e) { next(e); }
 }
 
-// ------------------------------------------------------------------------------------------- //
-// CREAR PROYECTO ACC (con o sin plantilla ACC) y opcionalmente aplicar tu plantilla de carpetas
-// y añadir un miembro al proyecto para que aparezca en Docs inmediatamente.
+// ------------------------- Create ACC Project -------------------------
 
 async function createAccProject(req, res, next) {
   try {
@@ -123,7 +177,7 @@ async function createAccProject(req, res, next) {
       vars = {},
       code, name,
       onNameConflict = 'suffix-timestamp',
-      memberEmail // 👈 nuevo
+      memberEmail
     } = req.body || {};
 
     const tplKey = templateId || template;
@@ -131,10 +185,8 @@ async function createAccProject(req, res, next) {
       return res.status(400).json({ error: 'hubId|accountId y templateId|template son obligatorios' });
     }
 
-    const tpl = await templates.loadTemplate(tplKey);
-    if (!tpl) return res.status(404).json({ error: 'template not found' });
-
-    const resolvedName = name || templates.expandName(tpl, vars);
+    const { tpl, name: resolvedNameCandidate } = await loadTemplateAndExpandName(tplKey, vars);
+    const resolvedName = name || resolvedNameCandidate;
 
     // 1) Crea proyecto en ACC
     const created = await accAdmin.createProject({
@@ -143,7 +195,7 @@ async function createAccProject(req, res, next) {
       onNameConflict
     });
 
-    // 2) (best-effort) invitar miembro para que aparezca en Docs
+    // 2) (best-effort) invitar miembro para visibilidad inmediata en Docs
     let member = null;
     if (memberEmail) {
       try {
@@ -165,7 +217,7 @@ async function createAccProject(req, res, next) {
     const applied = await accAdmin.applyTemplateToProject({
       accountId: created.accountId,
       projectId: created.projectId,
-      projectIdDM: created.dm.projectIdDM,
+      projectIdDM: created.dm?.projectIdDM,
       template: tpl,
       resolvedName
     });
@@ -175,38 +227,45 @@ async function createAccProject(req, res, next) {
       hubId: hubId || `b.${created.accountId}`,
       accountId: created.accountId,
       projectId: created.projectId,
-      projectIdDM: created.dm.projectIdDM,
+      projectIdDM: created.dm?.projectIdDM,
       name: created.name,
       ...(member ? { member } : {}),
       applied
     });
   } catch (e) {
-    const status = e?.response?.status || 500;
-    const detail =
-      e?.response?.data?.errors?.map(x => x.detail).join(' | ') ||
-      e?.response?.data?.detail ||
-      e.message;
+    const { status, detail } = mapError(e, 'create_acc_project_failed');
     return res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
   }
 }
 
-// --- Crear sitio SP desde cero y aplicar plantilla ---
+// ------------------------- Create SP Site -------------------------
+
 async function createSpSite(req, res, next) {
   try {
     const { templateId, vars = {}, type = 'CommunicationSite', title, url, description } = req.body || {};
     if (!templateId || !url) return res.status(400).json({ error: 'templateId y url son obligatorios' });
-    const tpl = await templates.loadTemplate(templateId);
-    if (!tpl) return res.status(404).json({ error: 'template not found' });
 
-    const resolvedName = title || templates.expandName(tpl, vars);
+    const { tpl, name } = await loadTemplateAndExpandName(templateId, vars);
+    const resolvedName = title || name;
+
     const created = await spAdmin.createSite({ type, title: resolvedName, url, description });
 
-    await spAdmin.applyTemplateToSite({ siteId: created.siteId, siteUrl: created.siteUrl, template: tpl, resolvedName });
+    await spAdmin.applyTemplateToSite({
+      siteId: created.siteId,
+      siteUrl: created.siteUrl,
+      template: tpl,
+      resolvedName
+    });
+
     res.json({ ok: true, siteId: created.siteId, siteUrl: created.siteUrl, name: resolvedName });
-  } catch (e) { next(e); }
+  } catch (e) {
+    const { status, detail } = mapError(e, 'create_sp_site_failed');
+    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
+  }
 }
 
-// --- Crear TWIN (ACC + SP), aplicar y guardar vínculo ---
+// ------------------------- Create Twin (ACC + SP) -------------------------
+
 async function createTwin(req, res, next) {
   try {
     const { hubId, accountId, sp = {}, templateId, template, vars = {}, twinId, code, name, memberEmail } = req.body || {};
@@ -214,14 +273,19 @@ async function createTwin(req, res, next) {
       return res.status(400).json({ error: 'hubId|accountId, templateId y sp.url son obligatorios' });
     }
 
+    // Plantillas: permitimos pasar templateId (admin) y, opcionalmente, una plantilla “directa”
     let tplObj = template;
     if (tplObj && typeof tplObj === 'string') {
-      tplObj = await templates.loadTemplate(tplObj);
-      if (!tplObj) return res.status(404).json({ error: `template "${template}" not found` });
+      const loaded = await templates.loadTemplate(tplObj);
+      if (!loaded) return res.status(404).json({ error: `template "${template}" not found` });
+      tplObj = loaded;
     }
 
-    const tplAdmin = await templates.loadTemplate(templateId).catch(() => null);
-    const resolvedName = name || (tplAdmin ? templates.expandName(tplAdmin, vars) : (tplObj ? templates.expandName(tplObj, vars) : vars.name)) || null;
+    const adminTpl = await templates.loadTemplate(templateId).catch(() => null);
+    const resolvedName =
+      name ||
+      (adminTpl ? templates.expandName(adminTpl, vars) : (tplObj ? templates.expandName(tplObj, vars) : vars.name));
+
     if (!resolvedName) return res.status(400).json({ error: 'name (o vars.name) es obligatorio' });
 
     // 1) ACC
@@ -238,15 +302,17 @@ async function createTwin(req, res, next) {
         email: memberEmail,
         makeProjectAdmin: true,
         grantDocs: 'admin'
-      });
+      }).catch(e => ({ ok: false, error: e?.message || 'invite_failed' }));
     }
 
-    if (tplObj) {
+    // 1.2) aplicar plantilla ACC si procede
+    const tplForAcc = adminTpl || tplObj;
+    if (tplForAcc) {
       await accAdmin.applyTemplateToProject({
         accountId: accCreated.accountId,
         projectId: accCreated.projectId,
         projectIdDM: accCreated.dm?.projectIdDM,
-        template: tplObj,
+        template: tplForAcc,
         resolvedName
       });
     }
@@ -258,7 +324,12 @@ async function createTwin(req, res, next) {
       url: sp.url,
       description: sp.description
     });
-    await spAdmin.applyTemplateToSite({ siteId: spCreated.siteId, siteUrl: spCreated.siteUrl, template: tplAdmin || tplObj, resolvedName });
+    await spAdmin.applyTemplateToSite({
+      siteId: spCreated.siteId,
+      siteUrl: spCreated.siteUrl,
+      template: adminTpl || tplObj,
+      resolvedName
+    });
 
     // 3) Guardar twin
     const link = await twinSvc.saveLink({
@@ -276,7 +347,10 @@ async function createTwin(req, res, next) {
       acc: { projectId: accCreated.projectId, accountId: accCreated.accountId, dm: accCreated.dm, member: memberResult },
       sp: spCreated
     });
-  } catch (e) { next(e); }
+  } catch (e) {
+    const { status, detail } = mapError(e, 'create_twin_failed');
+    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
+  }
 }
 
 module.exports = {

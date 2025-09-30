@@ -1,38 +1,22 @@
 // routes/api/admin.js
-
 const router = require('express').Router();
 const ctrl = require('../../controllers/admin.controller');
-const aps = require('../../clients/apsUserClient');
+const aps = require('../../clients/apsUserClient'); // Autodesk user client (3LO)
+const { spoAdminGet } = require('../../clients/spoClient');
 
-// Plantillas
+// -----------------------------------------------------------------------------
+// Templates
+// -----------------------------------------------------------------------------
 router.get('/templates/:templateId', ctrl.getTemplate);
 
-// Aplicar plantilla a ACC (sobre proyecto existente)
-router.post('/apply/acc', ctrl.applyAcc);
+// -----------------------------------------------------------------------------
+// ACC (Autodesk Construction Cloud)
+// -----------------------------------------------------------------------------
 
-// Aplicar plantilla a SharePoint (sobre sitio existente)
-router.post('/apply/sp', ctrl.applySp);
-
-// Crear vínculo ACC <-> SP y aplicar plantilla a ambos (si quieres hacerlo de una)
-router.post('/twin/apply', ctrl.applyTwin);
-
-// Estado del “twin”
-router.get('/twin/:id/status', ctrl.twinStatus);
-
-// Listar vínculos guardados
-router.get('/twin', ctrl.listTwins);
-
-// Creación desde cero
-router.post('/acc/projects/create', ctrl.createAccProject);
-router.post('/sp/sites/create', ctrl.createSpSite);
-router.post('/twin/create', ctrl.createTwin);
-
-// Listar cuentas ACC (Construction Admin API)
+// Listar cuentas (Construction Admin: a partir de hubs)
 router.get('/acc/accounts', async (req, res, next) => {
   try {
-    const aps = require('../../clients/apsUserClient');
     const hubs = await aps.apiGet('/project/v1/hubs', { timeout: 5000 });
-
     const list = (hubs?.data || []).map(h => ({
       hubId: h.id,                                  // p.ej. b.1bb8...
       accountId: (h.id || '').replace(/^b\./, ''),  // ACC GUID “puro”
@@ -40,32 +24,76 @@ router.get('/acc/accounts', async (req, res, next) => {
       region: h.attributes?.extension?.data?.region || null,
       type: h.attributes?.extension?.type
     }));
-
     res.json({ count: list.length, hubs: list });
   } catch (e) { next(e); }
 });
 
-// Detalle de cuenta (opcional)
+// Detalle de cuenta
 router.get('/acc/accounts/:accountId', async (req, res, next) => {
   try {
     const id = encodeURIComponent(req.params.accountId);
-    const data = await aps.apiGet(`/construction/admin/v1/accounts/${id}`); // <-- ANTES: /project/v1/accounts/:id
+    // Nota: Admin API actual
+    const data = await aps.apiGet(`/construction/admin/v1/accounts/${id}`);
     res.json(data);
   } catch (e) { next(e); }
 });
 
-// routes/api/admin.js
+// Proyectos de una cuenta
 router.get('/acc/accounts/:accountId/projects', async (req, res, next) => {
   try {
     const accountId = encodeURIComponent(req.params.accountId);
-    // ACC Admin API: lista de proyectos de una cuenta
     const r = await aps.apiGet(`/construction/admin/v1/accounts/${accountId}/projects`, {
       timeout: 8000
-      // si quieres paginar: params: { limit: 50, offset: 0 }
+      // params: { limit: 50, offset: 0 } // si quieres paginar
     });
     res.json(r);
   } catch (e) { next(e); }
 });
 
+// Crear proyecto ACC desde plantilla/base
+router.post('/acc/projects/create', ctrl.createAccProject);
+
+// Aplicar plantilla a ACC (sobre proyecto existente)
+router.post('/apply/acc', ctrl.applyAcc);   // ruta existente
+router.post('/acc/apply', ctrl.applyAcc);   // alias canónico
+
+// -----------------------------------------------------------------------------
+// SharePoint (SP)
+// -----------------------------------------------------------------------------
+
+// Crear sitio SP desde cero
+router.post('/sp/sites/create', ctrl.createSpSite);
+
+// Aplicar plantilla a SP (sobre sitio existente)
+router.post('/apply/sp', ctrl.applySp);          // ruta existente
+router.post('/sp/sites/apply', ctrl.applySp);    // alias canónico
+
+
+router.get('/sp/diag/tenant', async (req, res, next) => {
+  try {
+    const r = await spoAdminGet('/_api/SPO.Tenant');
+    res.json(r.data || { ok: true });
+  } catch (e) {
+    const status = e?.response?.status || 500;
+    const data = e?.response?.data || e?.message;
+    res.status(status).json({ status, data });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Twin (ACC <-> SP)
+// -----------------------------------------------------------------------------
+
+// Crear vínculo (sincronización/config inicial)
+router.post('/twin/create', ctrl.createTwin);
+
+// Aplicar a ambos lados (si procede)
+router.post('/twin/apply', ctrl.applyTwin);
+
+// Estado del vínculo
+router.get('/twin/:id/status', ctrl.twinStatus);
+
+// Listar vínculos guardados
+router.get('/twin', ctrl.listTwins);
 
 module.exports = router;
