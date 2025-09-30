@@ -29,7 +29,7 @@ async function listProjects(hubId, { all = false, limit = 50 } = {}) {
   if (!all) return await aps.apiGet(`${base}?page[limit]=${limit}`);
   let url = `${base}?page[limit]=${limit}`;
   const out = [];
-  for (; ;) {
+  for (;;) {
     const page = await aps.apiGet(url);
     if (Array.isArray(page.data)) out.push(...page.data);
     const next = page.links?.next?.href;
@@ -51,7 +51,7 @@ async function listFolderContents(projectId, folderId, { all = false, limit = 20
   let url = `${base}?page[limit]=${limit}`;
   const included = [];
   const data = [];
-  for (; ;) {
+  for (;;) {
     const page = await aps.apiGet(url);
     if (Array.isArray(page.data)) data.push(...page.data);
     if (Array.isArray(page.included)) included.push(...page.included);
@@ -136,10 +136,10 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
   let hubId = null;
   if (opts.projectId) {
     try {
-      const { hubId: h, hubRegion } = await getTopFoldersByProjectId(opts.projectId);
+      const { hubId: h, hubRegion } = await getTopFoldersByProjectId(opts.projectId, { preferHubId: opts.preferHubId });
       hubId = h;
       region = (hubRegion || region).toUpperCase();
-    } catch (_) { }
+    } catch (_) {}
   }
 
   console.log('[UPLOAD] storageUrn:', storageUrn);
@@ -260,71 +260,154 @@ async function createVersion(projectId, itemId, fileName, storageUrn) {
   );
 }
 
-// --- util: intenta encontrar el hub que contiene un projectId ---
-async function findHubForProject(projectId) {
-  const hubsResp = await aps.apiGet('/project/v1/hubs');
-  const hubs = (hubsResp?.data || []).map(h => h.id);
+// -------------------- PROVISIONING UTILS --------------------
 
-  for (const hubId of hubs) {
-    try {
-      await aps.apiGet(`/project/v1/hubs/${encodeURIComponent(hubId)}/projects/${encodeURIComponent(projectId)}`);
-      return hubId;
-    } catch (e) {
-      const status = e?.response?.status;
-      if (status === 404) continue;
-      throw e;
-    }
-  }
-  throw new Error(`projectId ${projectId} no encontrado en ninguno de los hubs accesibles`);
+// Cache de hubs y de mapeo proyecto→hub para acelerar siguientes llamadas
+let HUBS_CACHE = null;
+const PROJECT_HUB_CACHE = new Map(); // key: projectIdDM('b.{guid}'), val: { hubId, hubRegion }
+
+// Registro de “waiters” para de-dupe por proyecto
+const PROV_REGISTRY = new Map(); // key: projectIdDM, val: Promise<boolean>
+
+function _rememberProjectHub(projectIdDM, hubId, hubRegion) {
+  if (!projectIdDM || !hubId) return;
+  PROJECT_HUB_CACHE.set(projectIdDM, { hubId, hubRegion });
 }
 
-// --- construir árbol recursivo ---
-async function listProjectTree(projectId, { includeItems = false, maxDepth = Infinity } = {}) {
-  const { hubId, topFolders } = await getTopFoldersByProjectId(projectId);
+// --- REGION + HUB UTILS ---
+async function getTopFoldersByProjectId(projectId, opts = {}) {
+  const { quiet = false, preferHubId = null } = opts;
 
-  const root = { projectId, hubId, type: 'project', name: `project:${projectId}`, children: [] };
+  const projectIdDM = ensureB(projectId);
+  assertDocIdsOrThrow({ projectIdDM });
 
-  const queue = [];
-  for (const tf of topFolders) {
-    const node = {
-      id: tf.id,
-      type: tf.type,
-      name: tf.attributes?.displayName || tf.attributes?.name,
-      path: `/${tf.attributes?.displayName || tf.attributes?.name}`,
-      children: []
-    };
-    root.children.push(node);
-    queue.push({ node, depth: 1 });
-  }
-
-  while (queue.length) {
-    const { node, depth } = queue.shift();
-    if (depth > maxDepth) continue;
-
-    const page = await listFolderContents(projectId, node.id, { all: true, limit: 200 });
-    const entries = page?.data || [];
-
-    for (const entry of entries) {
-      const isFolder = entry.type === 'folders';
-      const display = entry.attributes?.displayName || entry.attributes?.name;
-      const child = { id: entry.id, type: entry.type, name: display, path: `${node.path}/${display}` };
-
-      if (isFolder) {
-        child.children = [];
-        node.children.push(child);
-        queue.push({ node: child, depth: depth + 1 });
-      } else {
-        if (includeItems) node.children.push(child);
-      }
+  // ¿lo tenemos cacheado?
+  const cached = PROJECT_HUB_CACHE.get(projectIdDM);
+  if (cached) {
+    try {
+      const url = `/project/v1/hubs/${encodeURIComponent(cached.hubId)}/projects/${encodeURIComponent(projectIdDM)}/topFolders`;
+      const tf = await aps.apiGet(url, { meta: { provisioning: true } });
+      return { hubId: cached.hubId, topFolders: tf.data || [], hubRegion: cached.hubRegion || 'US' };
+    } catch (e) {
+      // si falla el cache, seguimos con el flujo normal
     }
   }
 
-  return root;
+  // 1) obtener hubs (en caché)
+  if (!HUBS_CACHE) {
+    const hubsResp = await aps.apiGet('/project/v1/hubs', { meta: { provisioning: true } });
+    HUBS_CACHE = hubsResp?.data || [];
+  }
+  const hubs = Array.isArray(HUBS_CACHE) ? [...HUBS_CACHE] : [];
+
+  // 2) si nos pasan un hub preferido, anteponerlo
+  if (preferHubId) {
+    const prefer = ensureB(preferHubId);
+    const idx = hubs.findIndex(h => h.id === prefer);
+    if (idx > 0) hubs.unshift(hubs.splice(idx, 1)[0]);
+  }
+
+  // 3) probar hub por hub hasta que uno responda
+  for (const h of hubs) {
+    const hubIdDM = h.id;
+    try {
+      assertDocIdsOrThrow({ hubIdDM });
+
+      const url = `/project/v1/hubs/${encodeURIComponent(hubIdDM)}/projects/${encodeURIComponent(projectIdDM)}/topFolders`;
+      const tf = await aps.apiGet(url, { meta: { provisioning: true } });
+
+      const hubRegion =
+        (h?.attributes?.extension?.data?.region ||
+         h?.attributes?.region || 'US').toUpperCase();
+
+      // cacheamos el match para acelerar siguientes llamadas
+      _rememberProjectHub(projectIdDM, hubIdDM, hubRegion);
+
+      return { hubId: hubIdDM, topFolders: tf.data || [], hubRegion };
+    } catch (e) {
+      const status = e?.response?.status;
+      if (status === 404) continue; // aún no existe en ese hub
+      const code = e?.response?.data?.errors?.[0]?.code;
+      if (status === 400 && code === 'BIM360DM_ERROR') {
+        if (!quiet) await aps.sleep(300);
+        continue;
+      }
+      // otros errores: probar siguiente hub
+      continue;
+    }
+  }
+
+  throw new Error(`No se pudo resolver hub/topFolders para projectId ${projectIdDM}`);
+}
+
+// --- Espera a que el proyecto exista en DM (tras activar Docs) ---
+// De-duplica por projectIdDM, usa backoff exponencial + jitter y milestones de log.
+async function waitUntilDmProjectExists(hubIdDM, projectIdDM, opts = {}) {
+  const {
+    timeoutMs = 90_000,
+    initialDelayMs = 700,
+    maxDelayMs = 3_500,
+    factor = 1.7,
+    jitterMs = 200,
+    silentRetries = true,
+    onRetry = null,
+    preferHubId = null // 👈 nuevo: prioriza este hub en la resolución
+  } = opts;
+
+  const pid = ensureB(projectIdDM);
+  const prefer = ensureB(preferHubId || hubIdDM);
+
+  assertDocIdsOrThrow({ projectIdDM: pid });
+
+  // de-dup: si ya hay un waiter en marcha, reusar
+  if (PROV_REGISTRY.has(pid)) return PROV_REGISTRY.get(pid);
+
+  const waiter = (async () => {
+    const t0 = Date.now();
+    let attempt = 0;
+    let delay = initialDelayMs;
+
+    // Milestone de inicio (una sola línea)
+    if (!silentRetries) {
+      log.info('iniciando aprovisionamiento DM', { projectId: pid, preferHubId: prefer });
+    }
+
+    while (Date.now() - t0 < timeoutMs) {
+      attempt++;
+      try {
+        // Intenta resolver topFolders (es la prueba “fuerte” de que DM ya está listo)
+        await getTopFoldersByProjectId(pid, { quiet: true, preferHubId: prefer });
+        // listo
+        const dur = Date.now() - t0;
+        log.info('aprovisionamiento DM completado', { projectId: pid, durationMs: dur });
+        return true;
+      } catch (_) {
+        if (typeof onRetry === 'function') onRetry(attempt, Math.ceil(timeoutMs / Math.max(1, delay)));
+        // milestones cada ~2s para no inundar logs
+        if (!silentRetries && attempt % 3 === 1) {
+          log.debug('aprovisionamiento DM en progreso', { attempt, elapsedMs: Date.now() - t0 });
+        }
+        const jitter = Math.floor((Math.random() * 2 - 1) * jitterMs); // [-jitterMs, +jitterMs]
+        await sleep(Math.max(250, Math.min(maxDelayMs, delay + jitter)));
+        delay = Math.min(maxDelayMs, Math.floor(delay * factor));
+      }
+    }
+
+    throw new Error(`DM provisioning timeout (${pid})`);
+  })();
+
+  PROV_REGISTRY.set(pid, waiter);
+  try {
+    return await waiter;
+  } finally {
+    // liberar la entrada: si otra llamada llega más tarde, volverá a crear su waiter
+    PROV_REGISTRY.delete(pid);
+  }
 }
 
 // Devuelve el 'Project Files' folderId del proyecto (buscando en topFolders)
-async function getProjectFilesFolderId(projectId) {
-  const { hubId, topFolders } = await getTopFoldersByProjectId(projectId);
+async function getProjectFilesFolderId(projectId, opts = {}) {
+  const { hubId, topFolders } = await getTopFoldersByProjectId(projectId, opts);
   const pf = (topFolders || []).find(f =>
     (f.attributes?.displayName || f.attributes?.name || '').toLowerCase() === 'project files'
   );
@@ -370,104 +453,6 @@ async function ensureFolderByPath(projectId, path) {
   return currentId;
 }
 
-// --- Espera a que el proyecto exista en DM (tras activar Docs) ---
-async function waitUntilDmProjectExists(hubIdDM, projectIdDM, opts = {}) {
-  const {
-    timeoutMs = 60000,
-    pollMs = 1500,
-    silentRetries = false,
-    onRetry = null
-  } = opts;
-
-  const t0 = Date.now();
-  let tries = 0;
-
-  while (Date.now() - t0 < timeoutMs) {
-    tries++;
-    try {
-      await getTopFoldersByProjectId(projectIdDM); // si no lanza, ya existe
-      return true;
-    } catch (e) {
-      const status = e?.response?.status || e?.status;
-      if (!silentRetries) {
-        log.debug(`topFolders aún no disponible (status ${status || 'N/A'})`);
-      }
-      if (typeof onRetry === 'function') {
-        onRetry(tries, Math.ceil(timeoutMs / pollMs));
-      }
-      await new Promise(r => setTimeout(r, pollMs));
-    }
-  }
-  throw new Error(`DM provisioning timeout (${projectIdDM})`);
-}
-
-// --- REGION + HUB UTILS ---
-// Opciones:
-//  - quiet: true  -> no inspecciona payloads de error, y su intención es ejecutarse en bucles de retry sin ruido
-//  - preferHubId: 'b.{guid}' -> si ya conoces el hub, lo intenta primero (acelera mucho)
-let HUBS_CACHE = null;
-
-async function getTopFoldersByProjectId(projectId, opts = {}) {
-  const { quiet = false, preferHubId = null } = opts;
-
-  const projectIdDM = ensureB(projectId);
-  assertDocIdsOrThrow({ projectIdDM });
-
-  // 1) obtener hubs (en caché)
-  if (!HUBS_CACHE) {
-    // Nota: NO imprimas el payload de error aquí; si falla, reintenta en la siguiente llamada del caller
-    HUBS_CACHE = await aps.apiGet('/project/v1/hubs').then(r => (r?.data || []));
-  }
-  const hubs = Array.isArray(HUBS_CACHE) ? [...HUBS_CACHE] : [];
-
-  // 2) si nos pasan un hub preferido, anteponerlo
-  if (preferHubId) {
-    const idx = hubs.findIndex(h => h.id === ensureB(preferHubId));
-    if (idx > 0) hubs.unshift(hubs.splice(idx, 1)[0]);
-  }
-
-  // 3) probar hub por hub hasta que uno responda
-  for (const h of hubs) {
-    const hubIdDM = h.id;
-    try {
-      assertDocIdsOrThrow({ hubIdDM });
-
-      const url = `/project/v1/hubs/${encodeURIComponent(hubIdDM)}/projects/${encodeURIComponent(projectIdDM)}/topFolders`;
-
-      // Sugerencia: si has implementado el “flag silencioso” en el cliente APS,
-      // pasa un header para que el interceptor NO vuelque payloads en WARN:
-      // const tf = await aps.apiGet(url, { headers: { 'x-no-error-log': quiet ? '1' : '0' } });
-
-      const tf = await aps.apiGet(url); // <- si no tienes el flag, déjalo así
-
-      const hubRegion =
-        (h?.attributes?.extension?.data?.region ||
-         h?.attributes?.region || 'US').toUpperCase();
-
-      return { hubId: hubIdDM, topFolders: tf.data || [], hubRegion };
-    } catch (e) {
-      // NO inspeccionamos e.response.data (eso dispara logs en tus interceptores)
-      const status = e?.response?.status;
-      // 404: el proyecto aún no existe en este hub; seguimos probando en el siguiente
-      if (status === 404) continue;
-
-      // 400 BIM360DM_ERROR: patrón típico durante el aprovisionamiento; backoff corto y seguimos
-      const code = e?.response?.data?.errors?.[0]?.code; // leemos sólo 'code' (barato)
-      if (status === 400 && code === 'BIM360DM_ERROR') {
-        if (!quiet) await aps.sleep(500); // en quiet true lo hacemos aún más rápido
-        continue;
-      }
-
-      // cualquier otro error: probamos el siguiente hub (no rompemos el bucle)
-      continue;
-    }
-  }
-
-  // si ningún hub respondió, dejamos que el caller decida reintentar (su bucle controla el ruido)
-  throw new Error(`No se pudo resolver hub/topFolders para projectId ${projectIdDM}`);
-}
-
-
 module.exports = {
   ensureB,
   listHubs,
@@ -482,7 +467,6 @@ module.exports = {
   createItem,
   createVersion,
   parseStorageUrn,
-  listProjectTree,
   getProjectFilesFolderId,
   ensureFolderByPath,
   getTopFoldersByProjectId,

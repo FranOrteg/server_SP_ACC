@@ -68,12 +68,15 @@ const ax = axios.create({
 });
 
 // Reintentos con backoff para errores transitorios (ECONNRESET, 50x, etc.)
-async function withRetry(label, fn, { tries = 5, base = 400, factor = 1.8 } = {}) {
+async function withRetry(label, fn, { tries = 5, base = 400, factor = 1.8, quiet = false } = {}) {
   let last;
   for (let i = 1; i <= tries; i++) {
     try {
       return await fn();
     } catch (err) {
+      // Si no quedan reintentos, vuelve a lanzar
+      if (i === tries) throw err;
+
       const code   = err.code || err?.cause?.code;
       const status = err.response?.status;
       const networkError = !err.response;
@@ -81,9 +84,11 @@ async function withRetry(label, fn, { tries = 5, base = 400, factor = 1.8 } = {}
       const retryableStatus = new Set([408,425,429,500,502,503,504]);
       const shouldRetry = networkError || retryableCodes.has(code) || retryableStatus.has(status);
 
-      console.warn(`[HTTP][retry] ${label} intento ${i}/${tries} -> ${status || code || 'no-response'} ${err.message}`);
-      if (!shouldRetry || i === tries) throw err;
+      if (!shouldRetry) throw err;
 
+      if (!quiet) {
+        console.warn(`[HTTP][retry] ${label} intento ${i}/${tries} -> ${status || code || 'no-response'} ${err.message}`);
+      }
       const wait = Math.floor(base * Math.pow(factor, i - 1) + Math.random() * 100);
       await sleep(wait);
       last = err;
@@ -123,9 +128,18 @@ async function getAppAccessToken() {
 }
 
 // ---- API helpers (2LO) ----
-function logApsError(prefix, err) {
+function logApsError(prefix, err, meta) {
   try {
     const payload = err?.response?.data;
+    const status  = err?.response?.status;
+    const concise = `${prefix} HTTP ${status || 'ERR'}: ${err?.message || 'error'}`;
+
+    // En aprovisionamiento reducimos ruido (sin payload)
+    if (meta?.provisioning) {
+      console.debug(concise);
+      return;
+    }
+
     if (payload) {
       console.error(`${prefix} APS error payload:`, JSON.stringify(payload, null, 2));
     } else {
@@ -134,9 +148,19 @@ function logApsError(prefix, err) {
   } catch (_) {}
 }
 
+function maxRetriesDefault() {
+  const n = Number(process.env.APS_HTTP_MAX_RETRIES || '5');
+  return Number.isFinite(n) && n >= 0 ? n : 5;
+}
+
 async function apiGet(url, config = {}) {
   const access = await getAppAccessToken();
   const path = url.startsWith('http') ? url.replace(APS_BASE, '') : url;
+
+  const isProv = config?.meta?.provisioning === true;
+  const tries  = isProv ? 1 : maxRetriesDefault(); // 👈 sin reintentos para provisioning
+  const quiet  = isProv || !!config?.meta?.quiet;
+
   try {
     return await withRetry(`GET ${path}`, async () => {
       const { data, status } = await ax.get(path, {
@@ -145,9 +169,9 @@ async function apiGet(url, config = {}) {
       });
       if (status < 200 || status >= 300) throw new Error(`GET ${path} => ${status}`);
       return data;
-    });
+    }, { tries, quiet });
   } catch (err) {
-    logApsError(`GET ${path}`, err);
+    logApsError(`GET ${path}`, err, config?.meta);
     throw err;
   }
 }
@@ -155,6 +179,11 @@ async function apiGet(url, config = {}) {
 async function apiPost(url, body, config = {}) {
   const access = await getAppAccessToken();
   const path = url.startsWith('http') ? url.replace(APS_BASE, '') : url;
+
+  const isProv = config?.meta?.provisioning === true;
+  const tries  = isProv ? 1 : maxRetriesDefault();
+  const quiet  = isProv || !!config?.meta?.quiet;
+
   const headers = {
     'Content-Type': 'application/json',
     ...(config.headers || {}),
@@ -165,9 +194,9 @@ async function apiPost(url, body, config = {}) {
       const { data, status } = await ax.post(path, body, { ...config, headers });
       if (status < 200 || status >= 300) throw new Error(`POST ${path} => ${status}`);
       return data;
-    });
+    }, { tries, quiet });
   } catch (err) {
-    logApsError(`POST ${path}`, err);
+    logApsError(`POST ${path}`, err, config?.meta);
     throw err;
   }
 }
@@ -175,6 +204,11 @@ async function apiPost(url, body, config = {}) {
 async function apiPut(url, body, config = {}) {
   const access = await getAppAccessToken();
   const path = url.startsWith('http') ? url.replace(APS_BASE, '') : url;
+
+  const isProv = config?.meta?.provisioning === true;
+  const tries  = isProv ? 1 : maxRetriesDefault();
+  const quiet  = isProv || !!config?.meta?.quiet;
+
   try {
     return await withRetry(`PUT ${path}`, async () => {
       const { data, status } = await ax.put(path, body, {
@@ -183,9 +217,9 @@ async function apiPut(url, body, config = {}) {
       });
       if (status < 200 || status >= 300) throw new Error(`PUT ${path} => ${status}`);
       return data;
-    });
+    }, { tries, quiet });
   } catch (err) {
-    logApsError(`PUT ${path}`, err);
+    logApsError(`PUT ${path}`, err, config?.meta);
     throw err;
   }
 }

@@ -15,11 +15,6 @@ const templates = require('./admin.template.service');
 const { mk } = require('../helpers/logger');
 const log = mk('ACC');
 
-const LOG = (...a) => log.info(...a);
-const WARN = (...a) => log.warn(...a);
-
-// ------------------ Utils ------------------
-
 function ensureB(id) {
   if (!id) return id;
   return String(id).startsWith('b.') ? id : `b.${id}`;
@@ -30,7 +25,6 @@ function ensureB(id) {
 let DOCS_ACTIVATION_SUPPORTED; // undefined = desconocido, false = no existe en tenant, true = soportado
 
 async function activateDocs(projectAdminId) {
-  // Canonical (si no existe en el tenant, no insistimos más en siguientes llamadas)
   const url = `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=doc_mgmt`;
 
   if (DOCS_ACTIVATION_SUPPORTED === false) {
@@ -50,7 +44,6 @@ async function activateDocs(projectAdminId) {
       log.info('[activateDocs] no disponible en este tenant (404). No se volverá a intentar.');
       return { ok: true, skipped: true, via: url };
     }
-    // otros errores: best-effort
     log.warn('[activateDocs] continua (best-effort). Motivo:', s || e.message);
     return { ok: true, skipped: true, via: url, status: s };
   }
@@ -58,90 +51,40 @@ async function activateDocs(projectAdminId) {
 
 // ------------------ Miembros de Proyecto ------------------
 
-/**
- * Invita/asegura un miembro en el proyecto (ACC Admin v1).
- * Requisitos:
- *  - El email debe existir en la cuenta (Account Admin / Account Member).
- *  - El endpoint válido en tu tenant es v1 projects/{id}/users con products[] {key, access}.
- */
 async function ensureProjectMember({
   accountId,
   projectId,
   email,
-  makeProjectAdmin = true,      // añade projectAdministration:administrator
-  grantDocs = 'admin'           // 'admin' | 'member' | false
+  makeProjectAdmin = true,
+  grantDocs = 'admin'
 }) {
   if (!projectId || !email) throw new Error('ensureProjectMember: projectId y email son obligatorios');
 
   const products = [];
-  if (makeProjectAdmin) {
-    products.push({ key: 'projectAdministration', access: 'administrator' });
-  }
-  if (grantDocs) {
-    products.push({
-      key: 'docs',
-      access: grantDocs === 'admin' ? 'administrator' : 'member'
-    });
-  }
+  if (makeProjectAdmin) products.push({ key: 'projectAdministration', access: 'administrator' });
+  if (grantDocs) products.push({ key: 'docs', access: grantDocs === 'admin' ? 'administrator' : 'member' });
 
-  // 🚩 Este es el endpoint que acepta tu tenant:
   const url = `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users`;
   try {
-    await apsUser.apiPost(url, { email, products }); // <-- forma correcta
-
-    // Esperar a que quede "active"
+    await apsUser.apiPost(url, { email, products });
     await waitForProjectUserActive(projectId, email, { maxTries: 10, delayMs: 2000 });
-
-    log.info(
-      '[ensureProjectMember] invitado',
-      email,
-      'con',
-      products.map(p => `${p.key}:${p.access}`).join(',')
-    );
-
-    return {
-      ok: true,
-      email,
-      via: url
-    };
+    log.info('[ensureProjectMember] invitado', email, 'con', products.map(p => `${p.key}:${p.access}`).join(','));
+    return { ok: true, email, via: url };
   } catch (e) {
     const st = e?.response?.status;
     const data = e?.response?.data;
-    log.warn(
-      '[ensureProjectMember] fallo',
-      st,
-      '->',
-      Array.isArray(data?.errors)
-        ? data.errors.map(x => x.detail).join(' | ')
-        : (data?.detail || e.message)
-    );
-
-    return {
-      ok: false,
-      email,
-      skipped: true,
-      status: st,
-      error: data || e.message
-    };
+    log.warn('[ensureProjectMember] fallo', st, '->', Array.isArray(data?.errors) ? data.errors.map(x => x.detail).join(' | ') : (data?.detail || e.message));
+    return { ok: false, email, skipped: true, status: st, error: data || e.message };
   }
 }
 
-/**
- * Espera hasta que el usuario aparezca con status "active" en el proyecto.
- */
 async function waitForProjectUserActive(projectId, email, { maxTries = 8, delayMs = 1500 } = {}) {
   for (let i = 0; i < maxTries; i++) {
     try {
-      const list = await apsUser.apiGet(
-        `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users?limit=1000&offset=0`
-      );
-      const hit = (list?.results || []).find(
-        u => (u.email || '').toLowerCase() === (email || '').toLowerCase()
-      );
+      const list = await apsUser.apiGet(`/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users?limit=1000&offset=0`);
+      const hit = (list?.results || []).find(u => (u.email || '').toLowerCase() === (email || '').toLowerCase());
       if (hit && hit.status === 'active') return true;
-    } catch {
-      // no romper por errores puntuales de listado
-    }
+    } catch { /* no romper */ }
     await new Promise(r => setTimeout(r, delayMs));
   }
   return false;
@@ -149,13 +92,6 @@ async function waitForProjectUserActive(projectId, email, { maxTries = 8, delayM
 
 // ------------------ Creación de proyecto ------------------
 
-/**
- * Crea proyecto en Construction Admin API (3LO).
- * - Resuelve accountId desde hubId ("b.{accountGuid}") si hace falta.
- * - Maneja conflicto de nombre con políticas de reintento.
- * - (Best-effort) intenta activar Docs. Si el endpoint no existe en el tenant, continúa.
- * - Espera aprovisionamiento en Data Management.
- */
 async function createProject({
   hubId,
   accountId,
@@ -166,7 +102,7 @@ async function createProject({
   classification = 'production',
   startDate,
   endDate,
-  onNameConflict = 'suffix-timestamp' // 'fail' | 'suffix-timestamp'
+  onNameConflict = 'suffix-timestamp'
 }) {
   const accId = (accountId || (hubId || '').replace(/^b\./, '') || '').trim();
   if (!accId) throw new Error('createProject: accountId|hubId es obligatorio');
@@ -181,16 +117,10 @@ async function createProject({
     type
   };
 
-  // helper para generar nombres únicos
   const ts6 = () => Date.now().toString().slice(-6);
   const rnd6 = () => Math.random().toString().slice(2, 8);
-  const makeRetryName = (base) => {
-    if (onNameConflict === 'suffix-timestamp') return `${base}-${ts6()}`;
-    // fallback siempre único
-    return `${base}-${ts6()}-${rnd6()}`;
-  };
+  const makeRetryName = (base) => (onNameConflict === 'suffix-timestamp' ? `${base}-${ts6()}` : `${base}-${ts6()}-${rnd6()}`);
 
-  // intentos: 1 (nombre original) + 2 reintentos con sufijos únicos
   const maxAttempts = (onNameConflict === 'fail') ? 1 : 3;
   let attempt = 0;
   let lastErr;
@@ -200,12 +130,8 @@ async function createProject({
     const payload = { ...payloadBase, name: attemptName };
 
     try {
-      const created = await apsUser.apiPost(
-        `/construction/admin/v1/accounts/${encodeURIComponent(accId)}/projects`,
-        payload
-      );
+      const created = await apsUser.apiPost(`/construction/admin/v1/accounts/${encodeURIComponent(accId)}/projects`, payload);
 
-      // Resolver Admin projectId (202/Location o body.id)
       let projectAdminId =
         created?.id ||
         created?.data?.id ||
@@ -218,33 +144,32 @@ async function createProject({
       }
       if (!projectAdminId) throw new Error('No se pudo resolver el projectId de Admin tras la creación');
 
-      // (Best-effort) Activar Docs: si el endpoint no existe en el tenant (404), no bloquea
-      try {
-        await activateDocs(projectAdminId);
-      } catch (e) {
+      try { await activateDocs(projectAdminId); } catch (e) {
         const st = e?.response?.status;
-        if (st === 404) {
-          console.log('[ACC][activateDocs] endpoint no disponible en este tenant. Continuamos.');
-        } else {
-          console.log('[ACC][activateDocs] best-effort, continuar. Motivo:', st || e.message);
-        }
+        if (st === 404) log.debug('[activateDocs] endpoint no disponible en este tenant. Continuamos.');
+        else log.debug('[activateDocs] best-effort, continuar. Motivo:', st || e.message);
       }
 
-      // Esperar aprovisionamiento en Data Management
       const hubIdDM = ensureB(accId);
       const projectIdDM = ensureB(projectAdminId);
+
+      // 👉 pasar preferHubId para acelerar resolución y reducir intentos
       await dm.waitUntilDmProjectExists(hubIdDM, projectIdDM, {
-        timeoutMs: 60_000,
-        silentRetries: true,        // <-- reduce ruido de logs mientras reintenta
-        onRetry: (i, max) => log.debug(`Esperando aprovisionamiento DM… intento ${i}/${max}`)
+        timeoutMs: 90_000,
+        initialDelayMs: 700,
+        maxDelayMs: 3_500,
+        factor: 1.7,
+        jitterMs: 200,
+        silentRetries: true,
+        onRetry: (i) => log.debug(`Esperando aprovisionamiento DM… intento ${i}`),
+        preferHubId: hubIdDM
       });
 
       log.debug('DM provisioning listo para', { accountId: accId, projectId: projectAdminId });
 
-      // Metadatos DM (hub + región/topFolders, si se puede)
       let dmMeta = {};
       try {
-        const tf = await dm.getTopFoldersByProjectId(projectIdDM);
+        const tf = await dm.getTopFoldersByProjectId(projectIdDM, { preferHubId: hubIdDM });
         dmMeta = { hubIdDM: tf.hubId, projectIdDM, hubRegion: tf.hubRegion };
       } catch {
         dmMeta = { hubIdDM, projectIdDM };
@@ -253,7 +178,7 @@ async function createProject({
       return {
         ok: true,
         accountId: accId,
-        projectId: projectAdminId, // Admin GUID sin 'b.'
+        projectId: projectAdminId,
         name: payload.name,
         dm: dmMeta
       };
@@ -262,7 +187,7 @@ async function createProject({
       const detail = err?.response?.data?.errors?.[0]?.detail || '';
       if (status === 409 && attempt < maxAttempts - 1 && onNameConflict !== 'fail') {
         attempt++;
-        log.warn('409 nombre duplicado → reintento con sufijo único. detalle:', detail || '(sin detalle)');
+        log.warn('409 nombre duplicado → reintento con sufijo único', { detalle: detail || '(sin detalle)', attempt, maxAttempts });
         continue;
       }
       lastErr = err;
@@ -270,7 +195,6 @@ async function createProject({
     }
   }
 
-  // si llegamos aquí, no pudimos crear
   throw (lastErr || new Error('createProject: fallo desconocido creando proyecto'));
 }
 
@@ -288,22 +212,25 @@ async function applyTemplateToProject({
   if (!(projectId || projectIdDM)) throw new Error('applyTemplateToProject: projectId|projectIdDM requerido');
 
   const pidDM = ensureB(projectIdDM || projectId);
+  const hubIdDM = ensureB(accountId || '');
 
-  // Garantiza que el proyecto está visible en DM
-  let hubIdDM = ensureB(accountId || '');
+  // Asegura visibilidad en DM usando preferHubId para acelerar
   try {
-    const tf = await dm.getTopFoldersByProjectId(pidDM);
-    hubIdDM = tf.hubId || hubIdDM;
+    const tf = await dm.getTopFoldersByProjectId(pidDM, { preferHubId: hubIdDM });
+    // ok, seguimos
   } catch (e) {
     try {
-      // ⚠️ FIX: usar pidDM (no projectIdDM) para el segundo parámetro
       await dm.waitUntilDmProjectExists(hubIdDM, pidDM, {
-        timeoutMs: 60_000,
+        timeoutMs: 90_000,
+        initialDelayMs: 700,
+        maxDelayMs: 3_500,
+        factor: 1.7,
+        jitterMs: 200,
         silentRetries: true,
-        onRetry: (i, max) => log.debug(`Esperando aprovisionamiento DM… intento ${i}/${max}`)
+        onRetry: (i) => log.debug(`Esperando aprovisionamiento DM… intento ${i}`),
+        preferHubId: hubIdDM
       });
-
-      await dm.getTopFoldersByProjectId(pidDM);
+      await dm.getTopFoldersByProjectId(pidDM, { preferHubId: hubIdDM });
     } catch (e2) {
       throw e;
     }
@@ -314,7 +241,7 @@ async function applyTemplateToProject({
   const folders = templates.expandFolders(template, expandVars);
 
   // Crear bajo "/Project Files"
-  const pfId = await dm.getProjectFilesFolderId(pidDM);
+  const pfId = await dm.getProjectFilesFolderId(pidDM, { preferHubId: hubIdDM });
   const created = [];
   for (const f of folders) {
     const clean = f.split('/').filter(Boolean).join('/');
