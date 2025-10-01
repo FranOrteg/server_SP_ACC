@@ -61,6 +61,11 @@ router.post('/acc/apply', ctrl.applyAcc);   // alias canónico
 // SharePoint (SP)
 // -----------------------------------------------------------------------------
 
+// Diags SP / Graph: usuarios ---
+router.get('/sp/diag/user', ctrl.spDiagUser);      // ?id=<upn o id AAD>
+router.get('/sp/diag/users', ctrl.spDiagUsers);    // ?email=<correo>&q=<texto>
+
+
 // Crear sitio SP desde cero
 router.post('/sp/sites/create', ctrl.createSpSite);
 

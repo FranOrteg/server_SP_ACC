@@ -5,6 +5,7 @@ const accAdmin  = require('../services/admin.acc.service');   // unificado 3LO+D
 const spAdmin   = require('../services/admin.sp.service');
 const twinSvc   = require('../services/admin.twin.service');
 const logger    = require('../helpers/logger');
+const { graphGet } = require('../clients/graphClient');
 
 // ------------------------- Helpers locales -------------------------
 
@@ -353,6 +354,47 @@ async function createTwin(req, res, next) {
   }
 }
 
+// ------------------------- Comprobar usuarios del Tenant -------------------------
+
+// GET /api/admin/sp/diag/user?id=<upn|id>
+async function spDiagUser(req, res, next) {
+  try {
+    const { id } = req.query || {};
+    if (!id) return res.status(400).json({ error: 'id (upn o id AAD) requerido' });
+    const { data } = await graphGet(`/users/${encodeURIComponent(id)}?$select=id,displayName,mail,userPrincipalName,userType,accountEnabled`);
+    res.json(data);
+  } catch (e) {
+    // si /users/{id} falla, intenta por filtro mail
+    try {
+      const { id } = req.query || {};
+      const { data } = await graphGet(`/users?$filter=mail eq '${id}'&$select=id,displayName,mail,userPrincipalName,userType,accountEnabled`);
+      const items = data?.value || [];
+      if (!items.length) return res.status(404).json({ error: 'user not found' });
+      res.json(items[0]);
+    } catch (err) {
+      next(err);
+    }
+  }
+}
+
+// GET /api/admin/sp/diag/users?email=<correo>&q=<texto>
+async function spDiagUsers(req, res, next) {
+  try {
+    const { email, q } = req.query || {};
+    if (email) {
+      const { data } = await graphGet(`/users?$filter=mail eq '${email}'&$select=id,displayName,mail,userPrincipalName,userType,accountEnabled`);
+      return res.json({ by: 'mail', items: data?.value || [] });
+    }
+    if (q) {
+      // Búsqueda por displayName (básica, sin $search)
+      const { data } = await graphGet(`/users?$filter=startswith(displayName,'${q.replace(/'/g,"''")}')&$top=10&$select=id,displayName,mail,userPrincipalName`);
+      return res.json({ by: 'displayName', items: data?.value || [] });
+    }
+    return res.status(400).json({ error: 'pasa ?email= o ?q=' });
+  } catch (e) { next(e); }
+}
+
+
 module.exports = {
   getTemplate,
   applyAcc,
@@ -362,5 +404,7 @@ module.exports = {
   listTwins,
   createAccProject,
   createSpSite,
-  createTwin
+  createTwin,
+  spDiagUser,
+  spDiagUsers
 };

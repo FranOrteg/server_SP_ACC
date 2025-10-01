@@ -58,6 +58,16 @@ GET {{host}}{{urlSP}}/list?driveId={{SP_DRIVE_ID}}&path=1_COMM
 ### Comprobacion de token correcto
 GET {{host}}{{urlAdmin}}/sp/diag/tenant
 
+### DIAG: buscar usuario exacto por correo
+GET {{host}}{{urlAdmin}}/sp/diag/user?id=support@labit.es
+
+### DIAG: listar por mail
+GET {{host}}{{urlAdmin}}/sp/diag/users?email=support@labit.es
+
+### DIAG: por nombre visible (plan B)
+GET {{host}}{{urlAdmin}}/sp/diag/users?q=Support
+
+
 ################################################################################
 # ACC (descubrimiento rápido)
 ################################################################################

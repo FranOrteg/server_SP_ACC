@@ -54,7 +54,7 @@ async function spoAdminPost(path, data, extraHeaders = {}) {
 async function spoAdminGet(path, extraHeaders = {}) {
   const token = await getSharePointToken();
   return axios.get(`https://${SPO_ADMIN_HOST}${path}`, {
-    timeout: 15000,
+    timeout: 20000,
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json;odata=nometadata',
@@ -63,4 +63,7 @@ async function spoAdminGet(path, extraHeaders = {}) {
   });
 }
 
-module.exports = { spoAdminPost, spoAdminGet };
+module.exports = { 
+  spoAdminPost, 
+  spoAdminGet   
+};

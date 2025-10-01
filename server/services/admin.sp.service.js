@@ -1,8 +1,8 @@
 // services/admin.sp.service.js
 
+const { spoAdminPost, spoAdminGet } = require('../clients/spoClient');
 const logger = require('../helpers/logger').mk('SP');
 const { graphGet, graphPost } = require('../clients/graphClient');
-const { spoAdminPost } = require('../clients/spoClient');
 const sp = require('./sharepoint.service');
 const { expandFolders, getPermissions } = require('./admin.template.service');
 
@@ -63,50 +63,98 @@ async function ensureFolderByPath(driveId, relPath) {
   return parentId;
 }
 
+async function pollSPSiteManagerStatus(targetUrl, { maxMs = 360000, intervalMs = 3000 } = {}) {
+  const started = Date.now();
+  let last = null;
+
+  // Variantes probadas: algunos tenants exigen comillas simples; otros no.
+  // Primero probamos SIN comillas y, si da 400, reintentamos CON comillas.
+  const variants = [
+    `/_api/SPSiteManager/status?url=${encodeURIComponent(targetUrl)}`,
+    `/_api/SPSiteManager/status?url='${targetUrl.replace(/'/g, "%27")}'`
+  ];
+  let useVariant = 0;
+
+  while (Date.now() - started < maxMs) {
+    const statusUrl = variants[useVariant];
+    try {
+      // Algunas instancias piden odata=verbose para este endpoint
+      const { data } = await spoAdminGet(statusUrl, { Accept: 'application/json;odata=verbose' });
+      last = data;
+
+      // Normaliza posibles formas: a veces vienen con d/…
+      const payload = data?.d || data;
+      const st = payload?.SiteStatus ?? payload?.status;
+      const sid = payload?.SiteId ?? payload?.siteId;
+      const surl = payload?.Url ?? payload?.url;
+
+      logger.debug('status poll', { SiteStatus: st, Url: surl, SiteId: sid, meta: { provisioning: true } });
+
+      if (st === 2) {
+        return { ready: true, siteId: sid, siteUrl: surl, raw: payload };
+      }
+      if (st === 1) {
+        const em = payload?.ErrorMessage || 'SPSiteManager status=Error';
+        const e = new Error(em);
+        e.status = 400;
+        throw e;
+      }
+      // 0/3 -> sigue
+    } catch (err) {
+      // Log con CUERPO del 400 para ver qué pide exactamente el tenant
+      const code = err?.response?.status || err?.code || err?.message;
+      const body = err?.response?.data;
+      logger.debug('status polling transient', { err: code, body, variant: useVariant, meta: { provisioning: true } });
+
+      // Si es 400 y aún no probamos la otra variante, cambiamos
+      if (err?.response?.status === 400 && useVariant === 0) {
+        useVariant = 1;
+      }
+    }
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+
+  const e = new Error('Timeout esperando a que el sitio sea resolvible');
+  e.status = 504;
+  e.last = last || null;
+  throw e;
+}
+
+
 // ------------------------ provisioning waits ------------------------
 /**
  * Espera “silenciosamente” a que el sitio esté resolvible por Graph y su drive por defecto exista.
  * Usa backoff exponencial capped con jitter.
  * meta: { provisioning: true } para logs discretos.
  */
-async function waitUntilSpSiteReady({ siteUrl, siteId, maxMs = 180000 }) {
-  const started = Date.now();
-  let attempt = 0;
-
+async function waitUntilSpSiteReady({ siteUrl, siteId, maxMs = 180000 } = {}) {
   logger.debug('waitUntilSpSiteReady init', { siteUrl, siteId, maxMs, meta: { provisioning: true } });
 
-  // 1) resolver siteId si solo tenemos URL
-  let sId = siteId;
-  while (!sId) {
+  // 1) Si tenemos siteId o url, probamos por GRAPH (resolve)
+  const started = Date.now();
+  while (Date.now() - started < maxMs) {
     try {
-      const s = await sp.resolveSiteIdFlexible({ url: siteUrl });
-      sId = s?.id || null;
-      if (sId) break;
-    } catch (_) { /* silencioso */ }
-    if (Date.now() - started > maxMs) throw new Error('Timeout esperando a que el sitio sea resolvible');
-    await sleep(1000);
-  }
-
-  // 2) esperar drive por defecto
-  while (true) {
-    attempt++;
-    try {
-      const drv = await getDefaultDriveId(sId);
-      if (drv) {
-        logger.debug('waitUntilSpSiteReady OK', { siteId: sId, attempt, meta: { provisioning: true } });
-        return sId;
+      if (siteId) {
+        const s = await sp.resolveSiteIdFlexible({ url: siteUrl, siteId });
+        if (s?.id) {
+          logger.debug('waitUntilSpSiteReady OK', { siteId: s.id, attempt: 1, meta: { provisioning: true } });
+          return { siteId: s.id, siteUrl: s.webUrl };
+        }
       }
-    } catch (_) { /* transitorio */ }
-
-    const elapsed = Date.now() - started;
-    if (elapsed > maxMs) {
-      const err = new Error('Timeout esperando a que el drive por defecto exista');
-      err.status = 504;
-      throw err;
-    }
-    const backoff = Math.min(6000, 300 + attempt * 300 + Math.floor(Math.random() * 300));
-    await sleep(backoff);
+      if (siteUrl) {
+        const s = await sp.resolveSiteIdFlexible({ url: siteUrl });
+        if (s?.id) {
+          logger.debug('waitUntilSpSiteReady OK', { siteId: s.id, attempt: 1, meta: { provisioning: true } });
+          return { siteId: s.id, siteUrl: s.webUrl };
+        }
+      }
+    } catch { /* aún no */ }
+    await new Promise(r => setTimeout(r, 2000));
   }
+
+  const e = new Error('Timeout esperando a que el sitio sea resolvible');
+  e.status = 504;
+  throw e;
 }
 
 // ------------------------ plantilla ------------------------
@@ -124,10 +172,13 @@ async function applyTemplateToSite({ siteId, siteUrl, template, resolvedName }) 
     }
 
     // 2) asegurar sitio listo (Graph + drive)
-    sId = await waitUntilSpSiteReady({ siteUrl, siteId: sId });
+    const ready = await waitUntilSpSiteReady({ siteUrl, siteId: sId });
+    sId = ready.siteId;
+    const resolvedUrl = ready.siteUrl;
 
     // 3) drive por defecto
     const driveId = await getDefaultDriveId(sId);
+
     if (!driveId) throw new Error('No encontré la biblioteca por defecto');
 
     // 4) carpetas (idempotente)
@@ -176,17 +227,11 @@ async function applyTemplateToSite({ siteId, siteUrl, template, resolvedName }) 
  *    - Communication: SITEPAGEPUBLISHING#0
  *    - Team (moderno): STS#3
  */
-async function createSite({
-  type = 'CommunicationSite',
-  title,
-  url,
-  description = '',
-  lcid = 1033,
-  classification = ''
-}) {
+async function createSite({ type = 'CommunicationSite', title, url, description = '', lcid = 1033, classification = '' }) {
   if (!url) throw new Error('url es obligatorio (https://<tenant>.sharepoint.com/sites/<algo>)');
+  logger.info('Creando sitio SP', { type, url, title });
 
-  const payload = {
+    const payload = {
     request: {
       Title: title || '',
       Url: url,
@@ -194,35 +239,42 @@ async function createSite({
       ShareByEmailEnabled: false,
       Classification: classification || null,
       WebTemplate: (type === 'TeamSite') ? 'STS#3' : 'SITEPAGEPUBLISHING#0',
-      Description: description || ''
-      // SiteDesignId: '00000000-0000-0000-0000-000000000000' // opcional si usas Site Design
+      Description: description || '',
+      Owner: process.env.SPO_SITE_OWNER || undefined 
     }
   };
 
+
+  const { data } = await spoAdminPost('/_api/SPSiteManager/create', payload);
+
+  const siteStatus = data?.SiteStatus ?? data?.status ?? null;
+  const ret = {
+    siteId: data?.SiteId || '',
+    siteUrl: data?.Url || url, // fallback al solicitado
+    status: siteStatus,
+    meta: { provisioning: true }
+  };
+  logger.debug('SPSiteManager.create result', ret);
+
+  // 1) Polling a SPSiteManager/status (6 min)
   try {
-    logger.info('Creando sitio SP', { type, url, title });
-    const { data } = await spoAdminPost('/_api/SPSiteManager/create', payload);
-    if (data?.ErrorMessage) {
-      const err = new Error(`SPO create error: ${data.ErrorMessage}`);
-      err.status = 400;
-      throw err;
-    }
-
-    const siteUrl = data?.Url;
-    const siteId = data?.SiteId;
-    const status = data?.SiteStatus;
-
-    logger.debug('SPSiteManager.create result', { siteId, siteUrl, status, meta: { provisioning: true } });
-
-    // Espera silenciosa a que el sitio quede listo para Graph/Drive
-    await waitUntilSpSiteReady({ siteUrl, siteId });
-
-    logger.info('Sitio SP creado', { siteId, siteUrl });
-    return { siteId, siteUrl, status };
+    const ok = await pollSPSiteManagerStatus(url, { maxMs: 360000, intervalMs: 3000 });
+    ret.siteId = ok.siteId || ret.siteId;
+    ret.siteUrl = ok.siteUrl || ret.siteUrl;
+    ret.status = 2;
   } catch (e) {
-    throw mapAxiosError(e, 'create_site_failed');
+    // 2) Fallback: intenta resolver por Graph otros 2 min
+    logger.debug('status endpoint fallback to Graph', { meta: { provisioning: true } });
+    const resolved = await waitUntilSpSiteReady({ siteUrl: ret.siteUrl, siteId: ret.siteId, maxMs: 120000 });
+    ret.siteId = resolved.siteId;
+    ret.siteUrl = resolved.siteUrl;
+    ret.status = 2;
   }
+
+  logger.info('Sitio SP creado', { siteId: ret.siteId, siteUrl: ret.siteUrl });
+  return { siteId: ret.siteId, siteUrl: ret.siteUrl, status: ret.status };
 }
+
 
 module.exports = {
   applyTemplateToSite,
