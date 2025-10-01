@@ -1,4 +1,5 @@
 // clients/spoClient.js
+
 const axios = require('axios');
 const { buildCcaWithCert } = require('./msalClient');
 
@@ -11,7 +12,9 @@ if (!SPO_ADMIN_HOST)  console.warn('⚠️ Falta SPO_ADMIN_HOST en .env');
 let _token = null;
 let _expMs = 0;
 
-// Obtiene token app-only con CERTIFICADO para el host admin
+/**
+ * Obtiene token app-only con CERTIFICADO para el host admin
+ */
 async function getSharePointToken() {
   const now = Date.now();
   if (_token && now < _expMs - 60_000) return _token;
@@ -22,7 +25,9 @@ async function getSharePointToken() {
   });
 
   const token = result?.accessToken;
-  if (!token) throw new Error(`No se pudo obtener token para SharePoint admin host (${SPO_ADMIN_HOST})`);
+  if (!token) {
+    throw new Error(`No se pudo obtener token para SharePoint admin host (${SPO_ADMIN_HOST})`);
+  }
 
   const expiresInSec = result.expiresIn || 3000;
   _token = token;
@@ -38,32 +43,115 @@ async function getSharePointToken() {
   return token;
 }
 
+/**
+ * Helper para reintentar requests con backoff exponencial
+ */
+async function withRetry(fn, options = {}) {
+  const maxRetries = options.maxRetries ?? 3;
+  const baseDelay = options.baseDelay ?? 2000;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err?.response?.status;
+      const isLastAttempt = attempt === maxRetries;
+      
+      // Determinar si es reintentable
+      const isRetryable = 
+        !status || // errores de red/timeout
+        status === 429 || // rate limit
+        status >= 500; // errores de servidor
+      
+      if (!isRetryable || isLastAttempt) {
+        throw err;
+      }
+
+      // Calcular delay con backoff exponencial + jitter
+      const retryAfter = err?.response?.headers?.['retry-after'];
+      const delay = retryAfter 
+        ? parseInt(retryAfter) * 1000
+        : Math.min(
+            60000, // max 60s
+            baseDelay * Math.pow(2, attempt - 1) + Math.random() * 2000
+          );
+
+      console.warn(
+        `[SPO] Reintentando (${attempt}/${maxRetries}) después de ${delay}ms - ` +
+        `Status: ${status || 'network error'}`
+      );
+
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+/**
+ * POST a SharePoint Admin API
+ * Timeout más largo para operaciones de creación (30s por defecto)
+ */
 async function spoAdminPost(path, data, extraHeaders = {}) {
-  const token = await getSharePointToken();
-  return axios.post(`https://${SPO_ADMIN_HOST}${path}`, data, {
-    timeout: 15000,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json;odata=nometadata',
-      'Content-Type': 'application/json;odata=verbose',
-      ...extraHeaders
-    }
+  return withRetry(async () => {
+    const token = await getSharePointToken();
+    return axios.post(`https://${SPO_ADMIN_HOST}${path}`, data, {
+      timeout: extraHeaders.timeout ?? 30000, // 30s para operaciones admin
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json;odata=nometadata',
+        'Content-Type': 'application/json;odata=verbose',
+        ...extraHeaders
+      }
+    });
+  }, {
+    maxRetries: 2, // menos reintentos para POST (no son idempotentes)
+    baseDelay: 3000
   });
 }
 
+/**
+ * GET a SharePoint Admin API
+ * Timeout normal (20s) con reintentos automáticos
+ */
 async function spoAdminGet(path, extraHeaders = {}) {
-  const token = await getSharePointToken();
-  return axios.get(`https://${SPO_ADMIN_HOST}${path}`, {
-    timeout: 20000,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json;odata=nometadata',
-      ...extraHeaders
-    }
+  return withRetry(async () => {
+    const token = await getSharePointToken();
+    return axios.get(`https://${SPO_ADMIN_HOST}${path}`, {
+      timeout: extraHeaders.timeout ?? 20000,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json;odata=nometadata',
+        ...extraHeaders
+      }
+    });
+  }, {
+    maxRetries: 3,
+    baseDelay: 2000
   });
 }
 
-module.exports = { 
-  spoAdminPost, 
-  spoAdminGet   
+/**
+ * PATCH a SharePoint Admin API
+ */
+async function spoAdminPatch(path, data, extraHeaders = {}) {
+  return withRetry(async () => {
+    const token = await getSharePointToken();
+    return axios.patch(`https://${SPO_ADMIN_HOST}${path}`, data, {
+      timeout: extraHeaders.timeout ?? 20000,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json;odata=nometadata',
+        'Content-Type': 'application/json;odata=verbose',
+        ...extraHeaders
+      }
+    });
+  }, {
+    maxRetries: 2,
+    baseDelay: 2000
+  });
+}
+
+module.exports = {
+  spoAdminPost,
+  spoAdminGet,
+  spoAdminPatch
 };

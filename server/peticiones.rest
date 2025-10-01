@@ -23,7 +23,7 @@
 
 ### ADMIN / TEMPLATES
 @TEMPLATE_ID = labit-standard-v1
-@CODE = 001
+@CODE = 004
 @NAME = Demo
 @TWIN_ID = PRJ-001-DEMO
 

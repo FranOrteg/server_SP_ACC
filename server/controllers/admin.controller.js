@@ -1,7 +1,7 @@
 // controllers/admin.controller.js
 
 const templates = require('../services/admin.template.service');
-const accAdmin  = require('../services/admin.acc.service');   // unificado 3LO+DM
+const accAdmin  = require('../services/admin.acc.service');
 const spAdmin   = require('../services/admin.sp.service');
 const twinSvc   = require('../services/admin.twin.service');
 const logger    = require('../helpers/logger');
@@ -9,7 +9,7 @@ const { graphGet } = require('../clients/graphClient');
 
 // ------------------------- Helpers locales -------------------------
 
-/** Normaliza accountId/hubId → GUID “pelado” (sin 'b.') */
+/** Normaliza accountId/hubId → GUID "pelado" (sin 'b.') */
 function normalizeAccountId(accountIdOrHubId) {
   return (accountIdOrHubId || '').toString().replace(/^b\./, '');
 }
@@ -58,10 +58,6 @@ async function getTemplate(req, res, next) {
 
 // ------------------------- Apply only: ACC -------------------------
 
-/**
- * Aplica plantilla SOLO en ACC (Docs) sobre proyecto EXISTENTE.
- * Construction Admin usa GUID “pelado”; Data Management necesita 'b.{guid}' (lo resuelve el servicio).
- */
 async function applyAcc(req, res, next) {
   try {
     const { projectId, templateId, vars = {}, accountId, hubId } = req.body || {};
@@ -77,7 +73,7 @@ async function applyAcc(req, res, next) {
 
     const r = await accAdmin.applyTemplateToProject({
       accountId: accId,
-      projectId,              // Admin GUID (sin 'b.')
+      projectId,
       template: tpl,
       resolvedName: name
     });
@@ -244,24 +240,64 @@ async function createAccProject(req, res, next) {
 async function createSpSite(req, res, next) {
   try {
     const { templateId, vars = {}, type = 'CommunicationSite', title, url, description } = req.body || {};
-    if (!templateId || !url) return res.status(400).json({ error: 'templateId y url son obligatorios' });
+    if (!templateId || !url) {
+      return res.status(400).json({ error: 'templateId y url son obligatorios' });
+    }
 
     const { tpl, name } = await loadTemplateAndExpandName(templateId, vars);
     const resolvedName = title || name;
 
-    const created = await spAdmin.createSite({ type, title: resolvedName, url, description });
+    logger.mk('SP-CTRL').info('Iniciando creación de sitio SP', { 
+      type, 
+      url, 
+      title: resolvedName 
+    });
 
-    await spAdmin.applyTemplateToSite({
+    // 1) Crear sitio (incluye espera hasta que esté listo en Graph)
+    const created = await spAdmin.createSite({ 
+      type, 
+      title: resolvedName, 
+      url, 
+      description 
+    });
+
+    logger.mk('SP-CTRL').info('Sitio creado, aplicando plantilla', { 
+      siteId: created.siteId,
+      siteUrl: created.siteUrl 
+    });
+
+    // 2) Aplicar plantilla (carpetas, permisos, etc)
+    const applied = await spAdmin.applyTemplateToSite({
       siteId: created.siteId,
       siteUrl: created.siteUrl,
       template: tpl,
       resolvedName
     });
 
-    res.json({ ok: true, siteId: created.siteId, siteUrl: created.siteUrl, name: resolvedName });
+    logger.mk('SP-CTRL').info('Sitio SP completado', { 
+      siteId: created.siteId,
+      folders: applied.folders 
+    });
+
+    res.json({ 
+      ok: true, 
+      siteId: created.siteId, 
+      siteUrl: created.siteUrl, 
+      name: resolvedName,
+      applied
+    });
   } catch (e) {
     const { status, detail } = mapError(e, 'create_sp_site_failed');
-    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
+    
+    logger.mk('SP-CTRL').error('Error creando sitio SP', { 
+      status, 
+      detail,
+      url: req.body?.url 
+    });
+
+    res.status(status === 409 ? 400 : status).json({ 
+      error: { status, detail } 
+    });
   }
 }
 
@@ -274,7 +310,7 @@ async function createTwin(req, res, next) {
       return res.status(400).json({ error: 'hubId|accountId, templateId y sp.url son obligatorios' });
     }
 
-    // Plantillas: permitimos pasar templateId (admin) y, opcionalmente, una plantilla “directa”
+    // Plantillas: permitimos pasar templateId (admin) y, opcionalmente, una plantilla "directa"
     let tplObj = template;
     if (tplObj && typeof tplObj === 'string') {
       const loaded = await templates.loadTemplate(tplObj);
@@ -288,6 +324,12 @@ async function createTwin(req, res, next) {
       (adminTpl ? templates.expandName(adminTpl, vars) : (tplObj ? templates.expandName(tplObj, vars) : vars.name));
 
     if (!resolvedName) return res.status(400).json({ error: 'name (o vars.name) es obligatorio' });
+
+    logger.mk('TWIN-CTRL').info('Iniciando creación de twin', { 
+      name: resolvedName,
+      accId: accountId || hubId,
+      spUrl: sp.url 
+    });
 
     // 1) ACC
     const accCreated = await accAdmin.createProject({
@@ -319,12 +361,17 @@ async function createTwin(req, res, next) {
     }
 
     // 2) SP
+    logger.mk('TWIN-CTRL').info('ACC listo, creando sitio SP', { 
+      projectId: accCreated.projectId 
+    });
+
     const spCreated = await spAdmin.createSite({
       type: sp.type || 'CommunicationSite',
       title: resolvedName,
       url: sp.url,
       description: sp.description
     });
+
     await spAdmin.applyTemplateToSite({
       siteId: spCreated.siteId,
       siteUrl: spCreated.siteUrl,
@@ -341,16 +388,35 @@ async function createTwin(req, res, next) {
       vars
     });
 
+    logger.mk('TWIN-CTRL').info('Twin creado exitosamente', { 
+      twinId: link.twinId,
+      projectId: accCreated.projectId,
+      siteId: spCreated.siteId 
+    });
+
     res.json({
       ok: true,
       name: resolvedName,
       link,
-      acc: { projectId: accCreated.projectId, accountId: accCreated.accountId, dm: accCreated.dm, member: memberResult },
+      acc: { 
+        projectId: accCreated.projectId, 
+        accountId: accCreated.accountId, 
+        dm: accCreated.dm, 
+        member: memberResult 
+      },
       sp: spCreated
     });
   } catch (e) {
     const { status, detail } = mapError(e, 'create_twin_failed');
-    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
+    
+    logger.mk('TWIN-CTRL').error('Error creando twin', { 
+      status, 
+      detail 
+    });
+
+    res.status(status === 409 ? 400 : status).json({ 
+      error: { status, detail } 
+    });
   }
 }
 
@@ -393,7 +459,6 @@ async function spDiagUsers(req, res, next) {
     return res.status(400).json({ error: 'pasa ?email= o ?q=' });
   } catch (e) { next(e); }
 }
-
 
 module.exports = {
   getTemplate,
