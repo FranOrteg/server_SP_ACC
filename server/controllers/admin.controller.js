@@ -6,6 +6,8 @@ const spAdmin   = require('../services/admin.sp.service');
 const twinSvc   = require('../services/admin.twin.service');
 const logger    = require('../helpers/logger');
 const { graphGet } = require('../clients/graphClient');
+const { searchTenantUsers } = require('../services/admin.users.service');
+const { assignMembersToSite, removeMembersFromSite, getSiteMembers } = require('../services/admin.sp.service');
 
 // ------------------------- Helpers locales -------------------------
 
@@ -432,6 +434,59 @@ async function spDiagUsers(req, res, next) {
   } catch (e) { next(e); }
 }
 
+// GET /api/admin/sp/users?q=ana&top=20&next=...
+async function spListUsers(req, res, next) {
+  try {
+    const { q = '', top, next, onlyEnabled = 'true', includeGuests = 'false' } = req.query || {};
+    const result = await searchTenantUsers({
+      q,
+      top: top ? parseInt(top, 10) : 20,
+      next,
+      onlyEnabled: String(onlyEnabled).toLowerCase() !== 'false',
+      includeGuests: String(includeGuests).toLowerCase() === 'true'
+    });
+    res.json(result);
+  } catch (e) { next(e); }
+}
+
+// POST /api/admin/sp/sites/members
+// Body:
+// {
+//   "siteUrl": "...", "siteId": "...", 
+//   "add":    [ { "user": "a@b.com", "role": "Owner" }, ...],
+//   "remove": [ { "user": "c@d.com", "role": "Member" }, ...]
+// }
+async function setSiteMembers(req, res, next) {
+  try {
+    const { siteUrl, siteId, add = [], remove = [] } = req.body || {};
+    if (!(siteUrl || siteId)) return res.status(400).json({ error: 'siteUrl o siteId requerido' });
+
+    let added = null, removed = null;
+
+    if (Array.isArray(add) && add.length) {
+      added = await assignMembersToSite({ siteUrl, siteId, assignments: add });
+    }
+    if (Array.isArray(remove) && remove.length) {
+      removed = await removeMembersFromSite({ siteUrl, siteId, removals: remove });
+    }
+
+    res.json({ ok: true, ...(added ? { added } : {}), ...(removed ? { removed } : {}) });
+  } catch (e) {
+    const { status, detail } = mapError(e, 'set_members_failed');
+    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
+  }
+}
+
+// GET /api/admin/sp/sites/members?siteUrl=...
+async function getCurrentSiteMembers(req, res, next) {
+  try {
+    const { siteUrl } = req.query || {};
+    if (!siteUrl) return res.status(400).json({ error: 'siteUrl requerido' });
+    const r = await getSiteMembers({ siteUrl });
+    res.json(r);
+  } catch (e) { next(e); }
+}
+
 module.exports = {
   getTemplate,
   applyAcc,
@@ -443,5 +498,8 @@ module.exports = {
   createSpSite,
   createTwin,
   spDiagUser,
-  spDiagUsers
+  spDiagUsers,
+  spListUsers,
+  setSiteMembers,
+  getCurrentSiteMembers
 };

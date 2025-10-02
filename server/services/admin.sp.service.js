@@ -4,6 +4,7 @@ const logger = require('../helpers/logger').mk('SP');
 const { graphGet, graphPost } = require('../clients/graphClient');
 const sp = require('./sharepoint.service');
 const { expandFolders, getPermissions } = require('./admin.template.service');
+const { graphDelete } = require('../clients/graphClient');
 
 // ------------------------ utils ------------------------
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -78,19 +79,158 @@ async function adminFindDeletedSiteByUrl(url) {
   return Array.isArray(value) ? value : [];
 }
 
+// ---------------------------- helpers quitar usuarios (Communication Site) -----------------------------
+async function removeUserFromSpGroup(siteUrl, groupId, loginName) {
+  // SharePoint REST: POST a removeByLoginName(@v)?@v='<loginName>'
+  // loginName suele tener '#' y '@'; hay que encodear bien la comilla simple:
+  const encoded = encodeURIComponent(`'${loginName}'`);
+  const url = `${siteUrl}/_api/web/sitegroups/GetById(${groupId})/users/removeByLoginName(@v)?@v=${encoded}`;
+  // No requiere cuerpo; método POST
+  await spoTenantPost(url, null, { 'X-RequestDigest': 'context' }).catch(() => { }); // algunos tenants no requieren digest en app-only
+  return true;
+}
+
+async function getSpGroupUsers(siteUrl, groupId) {
+  const { data } = await spoTenantGet(
+    `${siteUrl}/_api/web/sitegroups/GetById(${groupId})/users?$select=Id,Title,Email,LoginName`
+  );
+  const arr = data?.d?.results || data?.d?.Users?.results || data?.value || [];
+  return arr.map(u => ({
+    id: u.Id,
+    title: u.Title,
+    email: u.Email,
+    loginName: u.LoginName
+  }));
+}
+
+// ---- listar miembros actuales del sitio ----
+async function getSiteMembers({ siteUrl }) {
+  const groups = await getWebAssociatedGroups(siteUrl);
+  const [owners, members, visitors] = await Promise.all([
+    groups.ownersId ? getSpGroupUsers(siteUrl, groups.ownersId) : [],
+    groups.membersId ? getSpGroupUsers(siteUrl, groups.membersId) : [],
+    groups.visitorsId ? getSpGroupUsers(siteUrl, groups.visitorsId) : []
+  ]);
+  return {
+    mode: 'sp-groups',
+    groups,
+    owners, members, visitors
+  };
+}
+
+// ---- quitar miembros (Communication / Group-connected) ----
+async function removeMembersFromSite({ siteId, siteUrl, removals = [] }) {
+  if (!removals?.length) return { removed: 0, skipped: 0, details: [] };
+
+  const ready = await waitUntilSpSiteReady({ siteUrl, siteId, maxMs: 180000 });
+  const resolvedUrl = ready.siteUrl;
+
+  // ¿Team Site con M365 Group?
+  const m365GroupId = await getSiteGroupIdIfAny(resolvedUrl);
+  const details = [];
+  let removed = 0, skipped = 0;
+
+  if (m365GroupId) {
+    for (const r of removals) {
+      const role = (r.role || '').toLowerCase(); // owner|member
+      if (!['owner', 'member'].includes(role)) {
+        details.push({ user: r.user, role: r.role, result: 'skipped (invalid role for group site)' });
+        skipped++; continue;
+      }
+      const oid = await resolveAadUserObjectId(r.user).catch(() => null);
+      if (!oid) {
+        details.push({ user: r.user, role: r.role, result: 'user not found' });
+        skipped++; continue;
+      }
+      try {
+        const path = role === 'owner'
+          ? `/groups/${m365GroupId}/owners/${oid}/$ref`
+          : `/groups/${m365GroupId}/members/${oid}/$ref`;
+        await graphDelete(path);
+        details.push({ user: r.user, role: r.role, result: 'removed from m365 group' });
+        removed++;
+      } catch (e) {
+        const msg = e?.response?.data?.error?.message || e?.message || 'error';
+        if (/does not exist|is not an owner|is not a member/i.test(msg)) {
+          details.push({ user: r.user, role: r.role, result: 'not in group' });
+          skipped++;
+        } else {
+          throw e;
+        }
+      }
+    }
+    return { removed, skipped, details, mode: 'm365-group' };
+  }
+
+  // Communication Site → quitar de grupos SP
+  const groups = await getWebAssociatedGroups(resolvedUrl);
+  const mapRoleToGroupId = (role) => {
+    const r = (role || '').toLowerCase();
+    if (r === 'owner') return groups.ownersId;
+    if (r === 'member') return groups.membersId;
+    if (r === 'visitor') return groups.visitorsId;
+    return null;
+  };
+
+  for (const r of removals) {
+    const gid = mapRoleToGroupId(r.role);
+    if (!gid) {
+      details.push({ user: r.user, role: r.role, result: 'skipped (invalid role)' });
+      skipped++; continue;
+    }
+    try {
+      // necesitamos el LoginName en el sitio
+      const ensured = await ensureWebUser(resolvedUrl, r.user).catch(() => null);
+      const loginName = ensured?.loginName || r.user; // fallback conservador
+      await removeUserFromSpGroup(resolvedUrl, gid, loginName);
+      details.push({ user: r.user, role: r.role, result: 'removed from sp group' });
+      removed++;
+    } catch (e) {
+      const msg = e?.response?.data?.error?.message?.value || e?.message || 'error';
+      if (/does not exist|not found/i.test(msg)) {
+        details.push({ user: r.user, role: r.role, result: 'not in group' });
+        skipped++;
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  return { removed, skipped, details, mode: 'sp-groups' };
+}
+
+async function removeFromM365Group(groupId, userObjectId, fromOwner = false) {
+  const rolePath = fromOwner ? 'owners' : 'members';
+  // DELETE /groups/{id}/{owners|members}/{id}/$ref
+  const { graphDelete } = require('../clients/graphClient');
+  await graphDelete(`/groups/${groupId}/${rolePath}/${userObjectId}/$ref`);
+}
+
+
 // ------------------------ Permisos helpers ------------------------
 
 // ¿Está group-connected? intenta resolver el GroupId del sitio.
 // Nota: en muchos Communication Site, /_api/group no existe → devolvemos null.
-async function getSiteGroupIdIfAny(siteUrl) {
+async function getSiteGroupIdIfAny(siteIdOrUrl) {
   try {
-    const { data } = await spoTenantGet(`${siteUrl}/_api/group`);
+    const siteUrl = typeof siteIdOrUrl === 'string' && siteIdOrUrl.startsWith('http')
+      ? siteIdOrUrl
+      : null;
+    if (!siteUrl) return null;
+
+    // Este endpoint existe en Team Sites conectados a M365 Group
+    const { data } = await spoTenantGet(`${siteUrl}/_api/site?$select=GroupId`);
     const d = data?.d || data;
-    return d?.Id || d?.GroupId || null;
+    const gid = d?.GroupId || d?.groupId || null;
+
+    // Guid.Empty => no hay M365 Group
+    if (!gid || /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(gid)) return null;
+    return String(gid);
   } catch {
     return null;
   }
 }
+
 
 // Devuelve los IDs de grupos asociados (Owners/Members/Visitors)
 async function getWebAssociatedGroups(siteUrl) {
@@ -484,47 +624,91 @@ async function createSite({
  *  - Communication Site → SharePoint Groups (Owners/Members/Visitors)
  *  - Team Site (group-connected) → M365 Group (owners/members)
  */
-async function assignMembersToSite({ siteId, siteUrl, siteType, members = [] }) {
-  if (!members?.length) return { applied: 0, skipped: 0, details: [] };
+async function assignMembersToSite({ siteId, siteUrl, assignments = [], remove = [] }) {
+  if (!(assignments?.length || remove?.length)) {
+    return { applied: 0, skipped: 0, details: [] };
+  }
 
   const ready = await waitUntilSpSiteReady({ siteUrl, siteId, maxMs: 180000 });
   const resolvedUrl = ready.siteUrl;
-
-  // Si es TeamSite o si detectamos GroupId, usamos M365 Group
-  const detectedGroupId = await getSiteGroupIdIfAny(resolvedUrl);
-  const useGroup = (siteType === 'TeamSite') || !!detectedGroupId;
-  const groupId = detectedGroupId || null;
+  const m365GroupId = await getSiteGroupIdIfAny(resolvedUrl);
 
   const details = [];
   let applied = 0, skipped = 0;
 
-  if (useGroup && groupId) {
-    for (const a of members) {
-      const role = (a.role || '').toLowerCase();
+  if (m365GroupId) {
+    // ADD
+    for (const a of (assignments || [])) {
+      const role = (a.role || '').toLowerCase(); // owner|member
       if (!['owner', 'member'].includes(role)) {
         details.push({ user: a.user, role: a.role, result: 'skipped (invalid role for group site)' });
         skipped++; continue;
       }
       const oid = await resolveAadUserObjectId(a.user).catch(() => null);
-      if (!oid) {
-        details.push({ user: a.user, role: a.role, result: 'user not found' });
-        skipped++; continue;
-      }
+      if (!oid) { details.push({ user: a.user, role: a.role, result: 'user not found' }); skipped++; continue; }
       try {
-        await addToM365Group(groupId, oid, role === 'owner');
+        await addToM365Group(m365GroupId, oid, role === 'owner');
         details.push({ user: a.user, role: a.role, result: 'added to m365 group' });
         applied++;
       } catch (e) {
-        const msg = e?.response?.data?.error?.message || e?.message || 'error';
-        if (/added object references|already exist/i.test(msg)) {
+        const msg = e?.response?.data?.error?.message || e?.message || '';
+        if (/already exist/i.test(msg)) {
           details.push({ user: a.user, role: a.role, result: 'already in group' });
           skipped++;
         } else {
-          details.push({ user: a.user, role: a.role, result: `error: ${msg}` });
+          throw e;
         }
       }
     }
-    return { applied, skipped, details, mode: 'm365-group', groupId };
+    // REMOVE
+    for (const r of (remove || [])) {
+      const role = (r.role || '').toLowerCase(); // owner|member
+      if (!['owner', 'member'].includes(role)) {
+        details.push({ user: r.user, role: r.role, result: 'skipped (invalid role for group site)' });
+        skipped++;
+        continue;
+      }
+      const oid = await resolveAadUserObjectId(r.user).catch(() => null);
+      if (!oid) {
+        details.push({ user: r.user, role: r.role, result: 'user not found' });
+        skipped++;
+        continue;
+      }
+
+      try {
+        // Si piden quitar Owner, primero quitamos de owners y además de members.
+        if (role === 'owner') {
+          // Quitar de owners
+          await removeFromM365Group(m365GroupId, oid, /*fromOwner*/ true).catch(e => {
+            const msg = e?.response?.data?.error?.message || e?.message || '';
+            if (!/cannot find|does not exist/i.test(msg)) throw e;
+          });
+          // Quitar de members (owners también son members)
+          await removeFromM365Group(m365GroupId, oid, /*fromOwner*/ false).catch(e => {
+            const msg = e?.response?.data?.error?.message || e?.message || '';
+            if (!/cannot find|does not exist/i.test(msg)) throw e;
+          });
+          details.push({ user: r.user, role: r.role, result: 'removed from m365 group (owner & member)' });
+          applied++;
+        } else {
+          // role === 'member' → solo de members
+          await removeFromM365Group(m365GroupId, oid, /*fromOwner*/ false);
+          details.push({ user: r.user, role: r.role, result: 'removed from m365 group (member)' });
+          applied++;
+        }
+      } catch (e) {
+        const msg = e?.response?.data?.error?.message || e?.message || '';
+        if (/cannot find|does not exist/i.test(msg)) {
+          details.push({ user: r.user, role: r.role, result: 'not in group' });
+          skipped++;
+        } else {
+          throw e;
+        }
+      }
+    }
+
+
+    return { applied, skipped, details, mode: 'm365-group' };
   }
 
   // Communication Site → SP groups
@@ -565,5 +749,7 @@ async function assignMembersToSite({ siteId, siteUrl, siteType, members = [] }) 
 module.exports = {
   applyTemplateToSite,
   createSite,
-  assignMembersToSite
+  assignMembersToSite,
+  getSiteMembers,
+  removeMembersFromSite
 };

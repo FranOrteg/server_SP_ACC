@@ -62,17 +62,21 @@ router.post('/acc/apply', ctrl.applyAcc);   // alias canónico
 // -----------------------------------------------------------------------------
 
 // Diags SP / Graph: usuarios ---
-router.get('/sp/diag/user', ctrl.spDiagUser);      // ?id=<upn o id AAD>
-router.get('/sp/diag/users', ctrl.spDiagUsers);    // ?email=<correo>&q=<texto>
+router.get('/sp/diag/user', ctrl.spDiagUser);      
+router.get('/sp/diag/users', ctrl.spDiagUsers);
 
+// Buscador de usuarios del tenant para autocompletar 
+router.get('/sp/users', ctrl.spListUsers);       
 
 // Crear sitio SP desde cero
 router.post('/sp/sites/create', ctrl.createSpSite);
 
 // Aplicar plantilla a SP (sobre sitio existente)
-router.post('/apply/sp', ctrl.applySp);          // ruta existente
-router.post('/sp/sites/apply', ctrl.applySp);    // alias canónico
+router.post('/apply/sp', ctrl.applySp);         
+router.post('/sp/sites/apply', ctrl.applySp);    
 
+// Gestión de miembros del sitio 
+router.post('/sp/sites/members', ctrl.setSiteMembers);       
 
 router.get('/sp/diag/tenant', async (req, res, next) => {
   try {
@@ -84,6 +88,7 @@ router.get('/sp/diag/tenant', async (req, res, next) => {
     res.status(status).json({ status, data });
   }
 });
+
 
 // -----------------------------------------------------------------------------
 // Twin (ACC <-> SP)
