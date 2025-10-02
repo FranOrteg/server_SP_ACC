@@ -33,10 +33,8 @@ function mapError(e, fallback = 'internal_error') {
     500;
 
   const detail =
-    // ACC típico
     (e?.response?.data?.errors && Array.isArray(e.response.data.errors) &&
       e.response.data.errors.map(x => x.detail).filter(Boolean).join(' | ')) ||
-    // SP típico
     e?.response?.data?.error?.message ||
     e?.response?.data?.ErrorMessage ||
     e?.response?.data?.detail ||
@@ -185,14 +183,12 @@ async function createAccProject(req, res, next) {
     const { tpl, name: resolvedNameCandidate } = await loadTemplateAndExpandName(tplKey, vars);
     const resolvedName = name || resolvedNameCandidate;
 
-    // 1) Crea proyecto en ACC
     const created = await accAdmin.createProject({
       hubId, accountId, name: resolvedName, code: code || vars.code, vars,
       type: vars.type, classification: vars.classification || 'production',
       onNameConflict
     });
 
-    // 2) (best-effort) invitar miembro para visibilidad inmediata en Docs
     let member = null;
     if (memberEmail) {
       try {
@@ -210,7 +206,6 @@ async function createAccProject(req, res, next) {
       }
     }
 
-    // 3) Aplica plantilla en Docs
     const applied = await accAdmin.applyTemplateToProject({
       accountId: created.accountId,
       projectId: created.projectId,
@@ -239,7 +234,16 @@ async function createAccProject(req, res, next) {
 
 async function createSpSite(req, res, next) {
   try {
-    const { templateId, vars = {}, type = 'CommunicationSite', title, url, description } = req.body || {};
+    const {
+      templateId,
+      vars = {},
+      type = 'CommunicationSite',
+      title,
+      url,
+      description,
+      members = []
+    } = req.body || {};
+
     if (!templateId || !url) {
       return res.status(400).json({ error: 'templateId y url son obligatorios' });
     }
@@ -248,31 +252,34 @@ async function createSpSite(req, res, next) {
     const resolvedName = title || name;
 
     logger.mk('SP-CTRL').info('Iniciando creación de sitio SP', { 
-      type, 
-      url, 
-      title: resolvedName 
+      type, url, title: resolvedName 
     });
 
-    // 1) Crear sitio (incluye espera hasta que esté listo en Graph)
     const created = await spAdmin.createSite({ 
-      type, 
-      title: resolvedName, 
-      url, 
-      description 
+      type, title: resolvedName, url, description 
     });
 
     logger.mk('SP-CTRL').info('Sitio creado, aplicando plantilla', { 
-      siteId: created.siteId,
-      siteUrl: created.siteUrl 
+      siteId: created.siteId, siteUrl: created.siteUrl 
     });
 
-    // 2) Aplicar plantilla (carpetas, permisos, etc)
     const applied = await spAdmin.applyTemplateToSite({
       siteId: created.siteId,
       siteUrl: created.siteUrl,
       template: tpl,
       resolvedName
     });
+
+    let membership = null;
+    if (Array.isArray(members) && members.length) {
+      membership = await spAdmin.assignMembersToSite({
+        siteId: created.siteId,
+        siteUrl: created.siteUrl,
+        siteType: type,
+        members
+      });
+      logger.mk('SP-CTRL').info('Miembros asignados al sitio', membership);
+    }
 
     logger.mk('SP-CTRL').info('Sitio SP completado', { 
       siteId: created.siteId,
@@ -284,20 +291,13 @@ async function createSpSite(req, res, next) {
       siteId: created.siteId, 
       siteUrl: created.siteUrl, 
       name: resolvedName,
-      applied
+      applied,
+      ...(membership ? { membership } : {})
     });
   } catch (e) {
     const { status, detail } = mapError(e, 'create_sp_site_failed');
-    
-    logger.mk('SP-CTRL').error('Error creando sitio SP', { 
-      status, 
-      detail,
-      url: req.body?.url 
-    });
-
-    res.status(status === 409 ? 400 : status).json({ 
-      error: { status, detail } 
-    });
+    logger.mk('SP-CTRL').error('Error creando sitio SP', { status, detail, url: req.body?.url });
+    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
   }
 }
 
@@ -310,7 +310,6 @@ async function createTwin(req, res, next) {
       return res.status(400).json({ error: 'hubId|accountId, templateId y sp.url son obligatorios' });
     }
 
-    // Plantillas: permitimos pasar templateId (admin) y, opcionalmente, una plantilla "directa"
     let tplObj = template;
     if (tplObj && typeof tplObj === 'string') {
       const loaded = await templates.loadTemplate(tplObj);
@@ -326,17 +325,13 @@ async function createTwin(req, res, next) {
     if (!resolvedName) return res.status(400).json({ error: 'name (o vars.name) es obligatorio' });
 
     logger.mk('TWIN-CTRL').info('Iniciando creación de twin', { 
-      name: resolvedName,
-      accId: accountId || hubId,
-      spUrl: sp.url 
+      name: resolvedName, accId: accountId || hubId, spUrl: sp.url 
     });
 
-    // 1) ACC
     const accCreated = await accAdmin.createProject({
       hubId, accountId, name: resolvedName, code, vars
     });
 
-    // 1.1) miembro opcional
     let memberResult = null;
     if (memberEmail) {
       memberResult = await accAdmin.ensureProjectMember({
@@ -348,7 +343,6 @@ async function createTwin(req, res, next) {
       }).catch(e => ({ ok: false, error: e?.message || 'invite_failed' }));
     }
 
-    // 1.2) aplicar plantilla ACC si procede
     const tplForAcc = adminTpl || tplObj;
     if (tplForAcc) {
       await accAdmin.applyTemplateToProject({
@@ -360,10 +354,7 @@ async function createTwin(req, res, next) {
       });
     }
 
-    // 2) SP
-    logger.mk('TWIN-CTRL').info('ACC listo, creando sitio SP', { 
-      projectId: accCreated.projectId 
-    });
+    logger.mk('TWIN-CTRL').info('ACC listo, creando sitio SP', { projectId: accCreated.projectId });
 
     const spCreated = await spAdmin.createSite({
       type: sp.type || 'CommunicationSite',
@@ -379,7 +370,6 @@ async function createTwin(req, res, next) {
       resolvedName
     });
 
-    // 3) Guardar twin
     const link = await twinSvc.saveLink({
       twinId: twinId || `${accCreated.projectId}__${spCreated.siteId}`,
       projectId: accCreated.projectId,
@@ -389,40 +379,25 @@ async function createTwin(req, res, next) {
     });
 
     logger.mk('TWIN-CTRL').info('Twin creado exitosamente', { 
-      twinId: link.twinId,
-      projectId: accCreated.projectId,
-      siteId: spCreated.siteId 
+      twinId: link.twinId, projectId: accCreated.projectId, siteId: spCreated.siteId 
     });
 
     res.json({
       ok: true,
       name: resolvedName,
       link,
-      acc: { 
-        projectId: accCreated.projectId, 
-        accountId: accCreated.accountId, 
-        dm: accCreated.dm, 
-        member: memberResult 
-      },
+      acc: { projectId: accCreated.projectId, accountId: accCreated.accountId, dm: accCreated.dm, member: memberResult },
       sp: spCreated
     });
   } catch (e) {
     const { status, detail } = mapError(e, 'create_twin_failed');
-    
-    logger.mk('TWIN-CTRL').error('Error creando twin', { 
-      status, 
-      detail 
-    });
-
-    res.status(status === 409 ? 400 : status).json({ 
-      error: { status, detail } 
-    });
+    logger.mk('TWIN-CTRL').error('Error creando twin', { status, detail });
+    res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
   }
 }
 
 // ------------------------- Comprobar usuarios del Tenant -------------------------
 
-// GET /api/admin/sp/diag/user?id=<upn|id>
 async function spDiagUser(req, res, next) {
   try {
     const { id } = req.query || {};
@@ -430,7 +405,6 @@ async function spDiagUser(req, res, next) {
     const { data } = await graphGet(`/users/${encodeURIComponent(id)}?$select=id,displayName,mail,userPrincipalName,userType,accountEnabled`);
     res.json(data);
   } catch (e) {
-    // si /users/{id} falla, intenta por filtro mail
     try {
       const { id } = req.query || {};
       const { data } = await graphGet(`/users?$filter=mail eq '${id}'&$select=id,displayName,mail,userPrincipalName,userType,accountEnabled`);
@@ -443,7 +417,6 @@ async function spDiagUser(req, res, next) {
   }
 }
 
-// GET /api/admin/sp/diag/users?email=<correo>&q=<texto>
 async function spDiagUsers(req, res, next) {
   try {
     const { email, q } = req.query || {};
@@ -452,7 +425,6 @@ async function spDiagUsers(req, res, next) {
       return res.json({ by: 'mail', items: data?.value || [] });
     }
     if (q) {
-      // Búsqueda por displayName (básica, sin $search)
       const { data } = await graphGet(`/users?$filter=startswith(displayName,'${q.replace(/'/g,"''")}')&$top=10&$select=id,displayName,mail,userPrincipalName`);
       return res.json({ by: 'displayName', items: data?.value || [] });
     }

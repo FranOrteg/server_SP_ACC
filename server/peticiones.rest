@@ -23,7 +23,7 @@
 
 ### ADMIN / TEMPLATES
 @TEMPLATE_ID = labit-standard-v1
-@CODE = 004
+@CODE = 007
 @NAME = Demo
 @TWIN_ID = PRJ-001-DEMO
 
@@ -149,6 +149,23 @@ Content-Type: application/json
   "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-{{CODE}}-{{NAME}}",
   "description": "Sitio del proyecto PRJ-{{CODE}}"
 }
+
+### (SP) Crear sitio + aplicar plantilla + asignar miembros
+POST {{host}}{{urlAdmin}}/sp/sites/create
+Content-Type: application/json
+
+{
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { "code": "{{CODE}}", "name": "{{NAME}}" },
+  "type": "CommunicationSite",
+  "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-{{CODE}}-{{NAME}}",
+  "description": "Sitio del proyecto PRJ-{{CODE}}",
+  "members": [
+    { "user": "support@labit.es", "role": "Owner" },
+    { "user": "fortega@labit.es", "role": "Member" }
+  ]
+}
+
 
 ################################################################################
 # ADMIN · Twin (ACC <-> SP)
