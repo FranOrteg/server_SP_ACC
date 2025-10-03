@@ -114,23 +114,21 @@ async function getSpGroupUsers(siteUrl, groupId) {
 }
 
 // ---- listar miembros actuales del sitio ----
-async function getSiteMembers({ siteUrl }) {
+async function getSiteMembers({ siteUrl, format } = {}) {
   // 1) ¿El sitio está conectado a un Microsoft 365 Group?
   const m365GroupId = await getSiteGroupIdIfAny(siteUrl);
 
   if (m365GroupId) {
-    // --- Caso Team Site (group-connected): leer de Graph ---
-    // Owners
+    // --- Team Site (group-connected) → Graph ---
     const ownersRes = await graphGet(
       `/groups/${m365GroupId}/owners?$select=id,displayName,mail,userPrincipalName&$top=999`
     ).catch(() => ({ data: { value: [] } }));
-    // Members
+
     const membersRes = await graphGet(
       `/groups/${m365GroupId}/members?$select=id,displayName,mail,userPrincipalName&$top=999`
     ).catch(() => ({ data: { value: [] } }));
 
     const owners = (ownersRes?.data?.value || [])
-      // Nos quedamos con usuarios (descartamos service principals, groups, etc.)
       .filter(x => (x['@odata.type'] || '').toLowerCase().includes('user') || x.userPrincipalName)
       .map(u => ({
         id: u.id,
@@ -140,7 +138,7 @@ async function getSiteMembers({ siteUrl }) {
         principalType: 1
       }));
 
-    const members = (membersRes?.data?.value || [])
+    const membersRaw = (membersRes?.data?.value || [])
       .filter(x => (x['@odata.type'] || '').toLowerCase().includes('user') || x.userPrincipalName)
       .map(u => ({
         id: u.id,
@@ -150,17 +148,22 @@ async function getSiteMembers({ siteUrl }) {
         principalType: 1
       }));
 
-    return {
-      mode: 'm365-group',
-      groupId: m365GroupId,
-      owners,
-      // En M365 Group, los owners también son members; puedes deduplicar si quieres:
-      members,
-      visitors: []  // no aplica en M365 Group
-    };
+    // Quitar de members los que ya son owners
+    const ownerIds = new Set(owners.map(o => o.id));
+    const members = membersRaw.filter(m => !ownerIds.has(m.id));
+
+    // Respuesta "plana" opcional para el UI
+    if (String(format).toLowerCase() === 'flat') {
+      const withRole = (arr, role) => arr.map(u => ({ ...u, role }));
+      const users = [...withRole(owners, 'Owner'), ...withRole(members, 'Member')];
+      return { mode: 'm365-group', groupId: m365GroupId, users };
+    }
+
+    // Respuesta estructurada por roles
+    return { mode: 'm365-group', groupId: m365GroupId, owners, members, visitors: [] };
   }
 
-  // --- Caso Communication Site: leer de los SharePoint Groups ---
+  // 2) Communication Site → SharePoint Groups
   const groups = await getWebAssociatedGroups(siteUrl);
   const [owners, members, visitors] = await Promise.all([
     groups.ownersId ? getSpGroupUsers(siteUrl, groups.ownersId) : [],
@@ -168,12 +171,19 @@ async function getSiteMembers({ siteUrl }) {
     groups.visitorsId ? getSpGroupUsers(siteUrl, groups.visitorsId) : []
   ]);
 
-  return {
-    mode: 'sp-groups',
-    groups,
-    owners, members, visitors
-  };
+  if (String(format).toLowerCase() === 'flat') {
+    const withRole = (arr, role) => arr.map(u => ({ ...u, role }));
+    const users = [
+      ...withRole(owners, 'Owner'),
+      ...withRole(members, 'Member'),
+      ...withRole(visitors, 'Visitor')
+    ];
+    return { mode: 'sp-groups', groups, users };
+  }
+
+  return { mode: 'sp-groups', groups, owners, members, visitors };
 }
+
 
 
 // ---- quitar miembros (Communication / Group-connected) ----

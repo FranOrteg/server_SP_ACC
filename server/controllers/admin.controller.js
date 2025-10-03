@@ -477,12 +477,12 @@ async function setSiteMembers(req, res, next) {
   }
 }
 
-// GET /api/admin/sp/sites/members?siteUrl=...
+// GET /api/admin/sp/sites/members?siteUrl=...&format=flat
 async function getCurrentSiteMembers(req, res, next) {
   try {
-    const { siteUrl } = req.query || {};
+    const { siteUrl, format } = req.query || {};
     if (!siteUrl) return res.status(400).json({ error: 'siteUrl requerido' });
-    const r = await getSiteMembers({ siteUrl });
+    const r = await getSiteMembers({ siteUrl, format });
     res.json(r);
   } catch (e) { next(e); }
 }
