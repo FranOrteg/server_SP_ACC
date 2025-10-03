@@ -115,18 +115,66 @@ async function getSpGroupUsers(siteUrl, groupId) {
 
 // ---- listar miembros actuales del sitio ----
 async function getSiteMembers({ siteUrl }) {
+  // 1) ¿El sitio está conectado a un Microsoft 365 Group?
+  const m365GroupId = await getSiteGroupIdIfAny(siteUrl);
+
+  if (m365GroupId) {
+    // --- Caso Team Site (group-connected): leer de Graph ---
+    // Owners
+    const ownersRes = await graphGet(
+      `/groups/${m365GroupId}/owners?$select=id,displayName,mail,userPrincipalName&$top=999`
+    ).catch(() => ({ data: { value: [] } }));
+    // Members
+    const membersRes = await graphGet(
+      `/groups/${m365GroupId}/members?$select=id,displayName,mail,userPrincipalName&$top=999`
+    ).catch(() => ({ data: { value: [] } }));
+
+    const owners = (ownersRes?.data?.value || [])
+      // Nos quedamos con usuarios (descartamos service principals, groups, etc.)
+      .filter(x => (x['@odata.type'] || '').toLowerCase().includes('user') || x.userPrincipalName)
+      .map(u => ({
+        id: u.id,
+        title: u.displayName,
+        email: u.mail || u.userPrincipalName || '',
+        loginName: u.userPrincipalName || u.mail || '',
+        principalType: 1
+      }));
+
+    const members = (membersRes?.data?.value || [])
+      .filter(x => (x['@odata.type'] || '').toLowerCase().includes('user') || x.userPrincipalName)
+      .map(u => ({
+        id: u.id,
+        title: u.displayName,
+        email: u.mail || u.userPrincipalName || '',
+        loginName: u.userPrincipalName || u.mail || '',
+        principalType: 1
+      }));
+
+    return {
+      mode: 'm365-group',
+      groupId: m365GroupId,
+      owners,
+      // En M365 Group, los owners también son members; puedes deduplicar si quieres:
+      members,
+      visitors: []  // no aplica en M365 Group
+    };
+  }
+
+  // --- Caso Communication Site: leer de los SharePoint Groups ---
   const groups = await getWebAssociatedGroups(siteUrl);
   const [owners, members, visitors] = await Promise.all([
     groups.ownersId ? getSpGroupUsers(siteUrl, groups.ownersId) : [],
     groups.membersId ? getSpGroupUsers(siteUrl, groups.membersId) : [],
     groups.visitorsId ? getSpGroupUsers(siteUrl, groups.visitorsId) : []
   ]);
+
   return {
     mode: 'sp-groups',
     groups,
     owners, members, visitors
   };
 }
+
 
 // ---- quitar miembros (Communication / Group-connected) ----
 async function removeMembersFromSite({ siteId, siteUrl, removals = [] }) {
