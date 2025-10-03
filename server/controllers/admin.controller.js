@@ -1,10 +1,10 @@
 // controllers/admin.controller.js
 
 const templates = require('../services/admin.template.service');
-const accAdmin  = require('../services/admin.acc.service');
-const spAdmin   = require('../services/admin.sp.service');
-const twinSvc   = require('../services/admin.twin.service');
-const logger    = require('../helpers/logger');
+const accAdmin = require('../services/admin.acc.service');
+const spAdmin = require('../services/admin.sp.service');
+const twinSvc = require('../services/admin.twin.service');
+const logger = require('../helpers/logger');
 const { graphGet } = require('../clients/graphClient');
 const { searchTenantUsers } = require('../services/admin.users.service');
 const { assignMembersToSite, removeMembersFromSite, getSiteMembers } = require('../services/admin.sp.service');
@@ -253,16 +253,16 @@ async function createSpSite(req, res, next) {
     const { tpl, name } = await loadTemplateAndExpandName(templateId, vars);
     const resolvedName = title || name;
 
-    logger.mk('SP-CTRL').info('Iniciando creación de sitio SP', { 
-      type, url, title: resolvedName 
+    logger.mk('SP-CTRL').info('Iniciando creación de sitio SP', {
+      type, url, title: resolvedName
     });
 
-    const created = await spAdmin.createSite({ 
-      type, title: resolvedName, url, description 
+    const created = await spAdmin.createSite({
+      type, title: resolvedName, url, description
     });
 
-    logger.mk('SP-CTRL').info('Sitio creado, aplicando plantilla', { 
-      siteId: created.siteId, siteUrl: created.siteUrl 
+    logger.mk('SP-CTRL').info('Sitio creado, aplicando plantilla', {
+      siteId: created.siteId, siteUrl: created.siteUrl
     });
 
     const applied = await spAdmin.applyTemplateToSite({
@@ -277,21 +277,20 @@ async function createSpSite(req, res, next) {
       membership = await spAdmin.assignMembersToSite({
         siteId: created.siteId,
         siteUrl: created.siteUrl,
-        siteType: type,
-        members
+        assignments: members
       });
       logger.mk('SP-CTRL').info('Miembros asignados al sitio', membership);
     }
 
-    logger.mk('SP-CTRL').info('Sitio SP completado', { 
+    logger.mk('SP-CTRL').info('Sitio SP completado', {
       siteId: created.siteId,
-      folders: applied.folders 
+      folders: applied.folders
     });
 
-    res.json({ 
-      ok: true, 
-      siteId: created.siteId, 
-      siteUrl: created.siteUrl, 
+    res.json({
+      ok: true,
+      siteId: created.siteId,
+      siteUrl: created.siteUrl,
       name: resolvedName,
       applied,
       ...(membership ? { membership } : {})
@@ -307,7 +306,7 @@ async function createSpSite(req, res, next) {
 
 async function createTwin(req, res, next) {
   try {
-    const { hubId, accountId, sp = {}, templateId, template, vars = {}, twinId, code, name, memberEmail } = req.body || {};
+    const { hubId, accountId, sp = {}, templateId, template, vars = {}, twinId, code, name, memberEmail, members = [] } = req.body || {};
     if (!(hubId || accountId) || !templateId || !sp?.url) {
       return res.status(400).json({ error: 'hubId|accountId, templateId y sp.url son obligatorios' });
     }
@@ -326,8 +325,8 @@ async function createTwin(req, res, next) {
 
     if (!resolvedName) return res.status(400).json({ error: 'name (o vars.name) es obligatorio' });
 
-    logger.mk('TWIN-CTRL').info('Iniciando creación de twin', { 
-      name: resolvedName, accId: accountId || hubId, spUrl: sp.url 
+    logger.mk('TWIN-CTRL').info('Iniciando creación de twin', {
+      name: resolvedName, accId: accountId || hubId, spUrl: sp.url
     });
 
     const accCreated = await accAdmin.createProject({
@@ -365,12 +364,23 @@ async function createTwin(req, res, next) {
       description: sp.description
     });
 
-    await spAdmin.applyTemplateToSite({
+    const spApplied = await spAdmin.applyTemplateToSite({
       siteId: spCreated.siteId,
       siteUrl: spCreated.siteUrl,
       template: adminTpl || tplObj,
       resolvedName
     });
+
+    // (Opcional) asignar miembros al sitio SP si vienen en la petición
+    let spMembership = null;
+    if (Array.isArray(members) && members.length) {
+      spMembership = await spAdmin.assignMembersToSite({
+        siteId: spCreated.siteId,
+        siteUrl: spCreated.siteUrl,
+        assignments: members
+      });
+      logger.mk('TWIN-CTRL').info('Miembros SP asignados (Twin)', spMembership);
+    }
 
     const link = await twinSvc.saveLink({
       twinId: twinId || `${accCreated.projectId}__${spCreated.siteId}`,
@@ -380,8 +390,8 @@ async function createTwin(req, res, next) {
       vars
     });
 
-    logger.mk('TWIN-CTRL').info('Twin creado exitosamente', { 
-      twinId: link.twinId, projectId: accCreated.projectId, siteId: spCreated.siteId 
+    logger.mk('TWIN-CTRL').info('Twin creado exitosamente', {
+      twinId: link.twinId, projectId: accCreated.projectId, siteId: spCreated.siteId
     });
 
     res.json({
@@ -389,7 +399,7 @@ async function createTwin(req, res, next) {
       name: resolvedName,
       link,
       acc: { projectId: accCreated.projectId, accountId: accCreated.accountId, dm: accCreated.dm, member: memberResult },
-      sp: spCreated
+      sp: { ...spCreated, applied: spApplied, ...(spMembership ? { membership: spMembership } : {}) }
     });
   } catch (e) {
     const { status, detail } = mapError(e, 'create_twin_failed');
@@ -427,7 +437,7 @@ async function spDiagUsers(req, res, next) {
       return res.json({ by: 'mail', items: data?.value || [] });
     }
     if (q) {
-      const { data } = await graphGet(`/users?$filter=startswith(displayName,'${q.replace(/'/g,"''")}')&$top=10&$select=id,displayName,mail,userPrincipalName`);
+      const { data } = await graphGet(`/users?$filter=startswith(displayName,'${q.replace(/'/g, "''")}')&$top=10&$select=id,displayName,mail,userPrincipalName`);
       return res.json({ by: 'displayName', items: data?.value || [] });
     }
     return res.status(400).json({ error: 'pasa ?email= o ?q=' });
