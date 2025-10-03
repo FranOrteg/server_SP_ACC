@@ -68,7 +68,7 @@ GET {{host}}{{urlAdmin}}/sp/diag/users?email=support@labit.es
 GET {{host}}{{urlAdmin}}/sp/diag/users?q=Support
 
 ### Listar miembros actuales del sitio (Communication Site)
-GET {{host}}{{urlAdmin}}/sp/sites/members?siteUrl=https://{{SPO_TENANT_HOST}}/sites/LBHR1
+GET {{host}}{{urlAdmin}}/sp/sites/members?siteUrl=https://{{SPO_TENANT_HOST}}/sites/LBAN0X
 
 ### Asignar miembros al sitio y quitarlos (Communication Site)
 POST {{host}}{{urlAdmin}}/sp/sites/members
@@ -80,7 +80,7 @@ Content-Type: application/json
     { "user": "fortega@labit.es", "role": "Owner" }
   ],
   "remove": [
-    { "user": "jrsevilla@labit.es", "role": "Member" }
+    { "user": "", "role": "" }
   ]
 }
 

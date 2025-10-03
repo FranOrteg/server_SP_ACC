@@ -92,15 +92,25 @@ async function removeUserFromSpGroup(siteUrl, groupId, loginName) {
 
 async function getSpGroupUsers(siteUrl, groupId) {
   const { data } = await spoTenantGet(
-    `${siteUrl}/_api/web/sitegroups/GetById(${groupId})/users?$select=Id,Title,Email,LoginName`
+    `${siteUrl}/_api/web/sitegroups/GetById(${groupId})/users` +
+    `?$select=Id,Title,Email,LoginName,PrincipalType,IsHiddenInUI`
   );
   const arr = data?.d?.results || data?.d?.Users?.results || data?.value || [];
-  return arr.map(u => ({
-    id: u.Id,
-    title: u.Title,
-    email: u.Email,
-    loginName: u.LoginName
-  }));
+
+  // PrincipalType:
+  // 1=User, 2=DistributionList, 4=SharePointGroup, 8=SecurityGroup, 16=Unknown...
+  return arr
+    .filter(u =>
+      u.PrincipalType === 1 || u.PrincipalType === 8 // solo usuarios y (opcional) security groups AAD
+    )
+    .filter(u => u.LoginName !== 'SHAREPOINT\\system' && !u.IsHiddenInUI)
+    .map(u => ({
+      id: u.Id,
+      title: u.Title,
+      email: u.Email,
+      loginName: u.LoginName,
+      principalType: u.PrincipalType
+    }));
 }
 
 // ---- listar miembros actuales del sitio ----
@@ -232,18 +242,47 @@ async function getSiteGroupIdIfAny(siteIdOrUrl) {
 }
 
 
-// Devuelve los IDs de grupos asociados (Owners/Members/Visitors)
+// Devuelve los IDs de grupos asociados (Owners/Members/Visitors) con fallback robusto
 async function getWebAssociatedGroups(siteUrl) {
-  const { data } = await spoTenantGet(
-    `${siteUrl}/_api/web?$select=AssociatedOwnerGroup/Id,AssociatedMemberGroup/Id,AssociatedVisitorGroup/Id&$expand=AssociatedOwnerGroup,AssociatedMemberGroup,AssociatedVisitorGroup`
-  );
-  const d = data?.d || data;
-  return {
-    ownersId: d?.AssociatedOwnerGroup?.Id,
-    membersId: d?.AssociatedMemberGroup?.Id,
-    visitorsId: d?.AssociatedVisitorGroup?.Id
-  };
+  // 1) intento rápido (todo en una query)
+  try {
+    const { data } = await spoTenantGet(
+      `${siteUrl}/_api/web?$select=AssociatedOwnerGroup/Id,AssociatedMemberGroup/Id,AssociatedVisitorGroup/Id&$expand=AssociatedOwnerGroup,AssociatedMemberGroup,AssociatedVisitorGroup`,
+      { Accept: 'application/json;odata=nometadata' } // más estable
+    );
+    const d = data?.d || data;
+    const ownersId = d?.AssociatedOwnerGroup?.Id ?? null;
+    const membersId = d?.AssociatedMemberGroup?.Id ?? null;
+    const visitorsId = d?.AssociatedVisitorGroup?.Id ?? null;
+
+    if (ownersId || membersId || visitorsId) {
+      return { ownersId, membersId, visitorsId };
+    }
+  } catch (_) {
+    // si falla seguimos con el fallback
+  }
+
+  // 2) fallback robusto: pedir cada grupo por separado
+  async function getId(endpoint) {
+    try {
+      const { data } = await spoTenantGet(
+        `${siteUrl}/_api/web/${endpoint}?$select=Id`,
+        { Accept: 'application/json;odata=nometadata' }
+      );
+      const d = data?.d || data;
+      return d?.Id ?? null;
+    } catch { return null; }
+  }
+
+  const [ownersId, membersId, visitorsId] = await Promise.all([
+    getId('AssociatedOwnerGroup'),
+    getId('AssociatedMemberGroup'),
+    getId('AssociatedVisitorGroup')
+  ]);
+
+  return { ownersId, membersId, visitorsId };
 }
+
 
 // Asegura usuario en el sitio y devuelve su LoginName (claims)
 async function ensureWebUser(siteUrl, upnOrMail) {
@@ -721,7 +760,7 @@ async function assignMembersToSite({ siteId, siteUrl, assignments = [], remove =
     return null;
   };
 
-  for (const a of members) {
+  for (const a of (assignments || [])) {
     const gid = mapRoleToGroupId(a.role);
     if (!gid) {
       details.push({ user: a.user, role: a.role, result: 'skipped (invalid role)' });
