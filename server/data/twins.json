@@ -3,18 +3,18 @@
     {
       "twinId": "PRJ-001-DEMO",
       "acc": {
-        "projectId": "870069bc-3f49-4142-9437-b2294b94ee65"
+        "projectId": "bd65ef29-60aa-45d4-8814-1273d2b2c914"
       },
       "sp": {
-        "siteId": "3cfbd933-a7f9-4dce-a209-40a45c46c36f"
+        "siteId": "38d3b314-21f2-470a-8c0a-fa3342aeef3a"
       },
       "templateId": "labit-standard-v1",
       "vars": {
-        "code": "007",
+        "code": "009",
         "name": "Demo"
       },
-      "createdAt": "2025-10-03T10:38:02.979Z",
-      "updatedAt": "2025-10-03T10:38:02.979Z"
+      "createdAt": "2025-10-06T10:30:33.845Z",
+      "updatedAt": "2025-10-06T10:30:33.845Z"
     }
   ]
 }

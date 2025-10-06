@@ -23,7 +23,7 @@
 
 ### ADMIN / TEMPLATES
 @TEMPLATE_ID = labit-standard-v1
-@CODE = 007
+@CODE = 009
 @NAME = Demo
 @TWIN_ID = PRJ-001-DEMO
 
@@ -151,7 +151,7 @@ Content-Type: application/json
 {
   "hubId": "{{HUB_ID}}",
   "templateId": "{{TEMPLATE_ID}}",
-  "vars": { "code": "002", "name": "Proyecto Libreeeee", "type": "Other", "classification": "production" },
+  "vars": { "code": "{{CODE}}", "name": "{{NAME}}", "type": "Other", "classification": "production" },
   "memberEmail": "support@labit.es",
   "onNameConflict": "suffix-timestamp"
 }
