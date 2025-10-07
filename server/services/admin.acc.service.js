@@ -62,8 +62,14 @@ async function ensureProjectMember({
 
   const products = [];
   if (makeProjectAdmin) products.push({ key: 'projectAdministration', access: 'administrator' });
-  if (grantDocs) products.push({ key: 'docs', access: grantDocs === 'admin' ? 'administrator' : 'member' });
-
+  if (grantDocs) {
+    const lvl = String(grantDocs).toLowerCase();
+    let access = 'viewer';
+    if (lvl === 'admin') access = 'administrator';
+    else if (lvl === 'member') access = 'member';
+    else access = 'viewer';
+    products.push({ key: 'docs', access });
+  }
   const url = `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users`;
   try {
     await apsUser.apiPost(url, { email, products });

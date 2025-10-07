@@ -23,7 +23,7 @@
 
 ### ADMIN / TEMPLATES
 @TEMPLATE_ID = labit-standard-v1
-@CODE = 009
+@CODE = 010
 @NAME = Demo
 @TWIN_ID = PRJ-001-DEMO
 
@@ -153,7 +153,11 @@ Content-Type: application/json
   "templateId": "{{TEMPLATE_ID}}",
   "vars": { "code": "{{CODE}}", "name": "{{NAME}}", "type": "Other", "classification": "production" },
   "memberEmail": "support@labit.es",
-  "onNameConflict": "suffix-timestamp"
+  "onNameConflict": "suffix-timestamp",
+  "members": [
+    { "user": "support@labit.es", "role": "Owner" },
+    { "user": "fortega@labit.es", "role": "Member" }
+  ]
 }
 
 ### (SP) Crear sitio + aplicar plantilla

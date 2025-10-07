@@ -46,6 +46,62 @@ function mapError(e, fallback = 'internal_error') {
   return { status, detail };
 }
 
+/** Mapea roles de la UI a ACC */
+function mapRoleToAcc(memberRole) {
+  const r = String(memberRole || 'Member').toLowerCase();
+  if (r === 'owner') return { makeProjectAdmin: true, grantDocs: 'admin' };
+  if (r === 'visitor') return { makeProjectAdmin: false, grantDocs: 'viewer' };
+  // default Member
+  return { makeProjectAdmin: false, grantDocs: 'member' };
+}
+
+/** Normaliza cualquier combinación: memberEmail | members[] | accMembers[] */
+function normalizeAccMembersFromBody(body) {
+  const out = [];
+
+  // Formato ACC explícito
+  if (Array.isArray(body?.accMembers)) {
+    for (const m of body.accMembers) {
+      if (!m?.email) continue;
+      out.push({
+        email: String(m.email).trim(),
+        makeProjectAdmin: !!m.makeProjectAdmin,
+        grantDocs: (m.grantDocs || 'viewer').toLowerCase(), // admin|member|viewer
+      });
+    }
+  }
+
+  // Formato “Twin/SP-like”
+  if (Array.isArray(body?.members)) {
+    for (const m of body.members) {
+      if (!m?.user) continue;
+      const map = mapRoleToAcc(m.role);
+      out.push({
+        email: String(m.user).trim(),
+        makeProjectAdmin: map.makeProjectAdmin,
+        grantDocs: map.grantDocs,
+      });
+    }
+  }
+
+  // Compat: memberEmail como admin de docs y de proyecto
+  if (body?.memberEmail) {
+    out.push({
+      email: String(body.memberEmail).trim(),
+      makeProjectAdmin: true,
+      grantDocs: 'admin',
+    });
+  }
+
+  // Dedup por email (última definición gana)
+  const dedup = {};
+  for (const m of out) {
+    if (m.email) dedup[m.email.toLowerCase()] = m;
+  }
+  return Object.values(dedup);
+}
+
+
 // ------------------------- Templates -------------------------
 
 async function getTemplate(req, res, next) {
@@ -174,7 +230,9 @@ async function createAccProject(req, res, next) {
       vars = {},
       code, name,
       onNameConflict = 'suffix-timestamp',
-      memberEmail
+      memberEmail,            // compat
+      members = [],           // nuevo (Owner/Member/Visitor)
+      accMembers = []         // nuevo (email/makeProjectAdmin/grantDocs)
     } = req.body || {};
 
     const tplKey = templateId || template;
@@ -191,22 +249,28 @@ async function createAccProject(req, res, next) {
       onNameConflict
     });
 
-    let member = null;
-    if (memberEmail) {
-      try {
-        member = await accAdmin.ensureProjectMember({
-          accountId: created.accountId,
-          projectId: created.projectId,
-          email: memberEmail,
-          makeProjectAdmin: true,
-          grantDocs: 'admin'
-        });
-      } catch (e) {
-        const msg = e?.response?.data?.detail || e?.message || 'invite_failed';
-        logger.mk('ACC-CTRL').warn('ensureProjectMember warning:', msg);
-        member = { ok: false, error: msg };
+    // --- NUEVO: normalizar y citar a todos los miembros (si se pasan)
+    const normalized = normalizeAccMembersFromBody({ memberEmail, members, accMembers });
+    let membership = null;
+    if (normalized.length) {
+      membership = [];
+      for (const m of normalized) {
+        try {
+          const r = await accAdmin.ensureProjectMember({
+            accountId: created.accountId,
+            projectId: created.projectId,
+            email: m.email,
+            makeProjectAdmin: !!m.makeProjectAdmin,
+            grantDocs: (m.grantDocs || 'viewer')
+          });
+          membership.push(r);
+        } catch (e) {
+          const msg = e?.response?.data?.detail || e?.message || 'invite_failed';
+          membership.push({ ok: false, email: m.email, error: msg });
+        }
       }
     }
+    // --- FIN NUEVO
 
     const applied = await accAdmin.applyTemplateToProject({
       accountId: created.accountId,
@@ -223,7 +287,7 @@ async function createAccProject(req, res, next) {
       projectId: created.projectId,
       projectIdDM: created.dm?.projectIdDM,
       name: created.name,
-      ...(member ? { member } : {}),
+      ...(membership ? { membership } : {}),
       applied
     });
   } catch (e) {
@@ -231,6 +295,7 @@ async function createAccProject(req, res, next) {
     return res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
   }
 }
+
 
 // ------------------------- Create SP Site -------------------------
 
