@@ -144,6 +144,18 @@ Content-Type: application/json
 # ADMIN · Creación DESDE CERO
 ################################################################################
 
+### (ACC) Crear proyecto + aplicar plantilla (canónico)
+POST /api/admin/acc/projects/create
+Content-Type: application/json
+
+{
+  "hubId": "{{HUB_ID}}",
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { "code": "{{CODE}}", "name": "{{NAME}}" },
+  "memberEmail": "support@labit.es"
+}
+
+
 ### (ACC) Crear proyecto + aplicar plantilla + (opcional) invitar miembro
 POST {{host}}{{urlAdmin}}/acc/projects/create
 Content-Type: application/json
@@ -152,11 +164,11 @@ Content-Type: application/json
   "hubId": "{{HUB_ID}}",
   "templateId": "{{TEMPLATE_ID}}",
   "vars": { "code": "{{CODE}}", "name": "{{NAME}}", "type": "Other", "classification": "production" },
-  "memberEmail": "support@labit.es",
   "onNameConflict": "suffix-timestamp",
-  "members": [
-    { "user": "support@labit.es", "role": "Owner" },
-    { "user": "fortega@labit.es", "role": "Member" }
+  "accMembers": [
+    { "email": "support@labit.es", "makeProjectAdmin": true,  "grantDocs": "admin"  },
+    { "email": "fortega@labit.es", "makeProjectAdmin": false, "grantDocs": "member" },
+    { "email": "jrsevilla@labit.es", "makeProjectAdmin": false, "grantDocs": "member" }
   ]
 }
 
@@ -265,5 +277,7 @@ GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}
 ### GET account details
 GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}/projects
 
+### Listar usuarios del Hub
+GET {{host}}{{urlAdmin}}/acc/accounts/{{ACC_ACCOUNT_ID}}/users?q=forte&limit=25
 
 ### http://localhost:3000/api/oauth/login?s=data:read,data:write,account:read,account:write

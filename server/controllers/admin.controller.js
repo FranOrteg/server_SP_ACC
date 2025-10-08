@@ -473,7 +473,7 @@ async function createTwin(req, res, next) {
   }
 }
 
-// ------------------------- Comprobar usuarios del Tenant -------------------------
+// ------------------------- Comprobar usuarios del Tenant SP -------------------------
 
 async function spDiagUser(req, res, next) {
   try {
@@ -562,6 +562,28 @@ async function getCurrentSiteMembers(req, res, next) {
   } catch (e) { next(e); }
 }
 
+// ------------------------- Comprobar usuarios del Hub -------------------------
+
+// GET /api/admin/acc/accounts/:accountId/users?q=...&limit=25&offset=0
+async function listAccAccountUsers(req, res) {
+  try {
+    const { accountId } = req.params;
+    const { q = "", limit, offset, region } = req.query || {};
+    const raw = await accAdmin.listAccountUsers({
+      accountId, q,
+      limit: limit ? parseInt(limit, 10) : 25,
+      offset: offset ? parseInt(offset, 10) : 0,
+      region
+    });
+    const norm = accAdmin.normalizeAccountUsersResponse(raw);
+    res.json(norm); // { items:[{id,name,email,status,company,role}], next? }
+  } catch (e) {
+    const { status, detail } = mapError(e, 'list_acc_account_users_failed');
+    res.status(status || 500).json({ error: { status, detail } });
+  }
+}
+
+
 module.exports = {
   getTemplate,
   applyAcc,
@@ -576,5 +598,6 @@ module.exports = {
   spDiagUsers,
   spListUsers,
   setSiteMembers,
-  getCurrentSiteMembers
+  getCurrentSiteMembers,
+  listAccAccountUsers
 };

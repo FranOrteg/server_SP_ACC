@@ -38,6 +38,9 @@ router.get('/acc/accounts/:accountId', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Usuarios del HUB
+router.get('/acc/accounts/:accountId/users', ctrl.listAccAccountUsers);
+
 // Proyectos de una cuenta
 router.get('/acc/accounts/:accountId/projects', async (req, res, next) => {
   try {

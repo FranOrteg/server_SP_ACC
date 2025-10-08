@@ -12,6 +12,7 @@
 const apsUser = require('../clients/apsUserClient');
 const dm = require('./acc.service');
 const templates = require('./admin.template.service');
+const aps2LO = require('../clients/apsClient');
 const { mk } = require('../helpers/logger');
 const log = mk('ACC');
 
@@ -47,6 +48,61 @@ async function activateDocs(projectAdminId) {
     log.warn('[activateDocs] continua (best-effort). Motivo:', s || e.message);
     return { ok: true, skipped: true, via: url, status: s };
   }
+}
+
+// ------------------ Miembros de Hub (HQ API, 2LO) ------------------
+
+/**
+ * Lista usuarios de una cuenta ACC usando HQ API (2-legged).
+ * Admite filtro 'q' → se mapea a 'search', y paginación limit/offset.
+ * Si la ruta global no aplica, hace fallback a /regions/eu/...
+ */
+async function listAccountUsers({ accountId, q = "", limit = 25, offset = 0, region } = {}) {
+  const accId = String(accountId || "").replace(/^b\./, "");
+  if (!accId) throw new Error("listAccountUsers: accountId requerido");
+
+  const clamp = (n, lo, hi) => Math.min(Math.max(parseInt(n ?? 0, 10), lo), hi);
+  const params = {
+    limit: clamp(limit, 1, 100),          // HQ: max 100
+    offset: Math.max(parseInt(offset ?? 0, 10), 0),
+  };
+  if (q && q.trim()) params.search = q.trim();
+
+  const base = region?.toLowerCase() === 'eu'
+    ? `/hq/v1/regions/eu/accounts/${encodeURIComponent(accId)}`
+    : `/hq/v1/accounts/${encodeURIComponent(accId)}`;
+
+  const tryOnce = (root) => aps2LO.apiGet(`${root}/users`, { params, timeout: 10000 });
+
+  try {
+    return await tryOnce(base);
+  } catch (e) {
+    const st = e?.response?.status;
+    if (!region && (st === 404 || st === 400)) {
+      return await tryOnce(`/hq/v1/regions/eu/accounts/${encodeURIComponent(accId)}`);
+    }
+    throw e;
+  }
+}
+
+/** Normaliza respuesta HQ para UI/autocomplete */
+function normalizeAccountUsersResponse(raw) {
+  const arr = Array.isArray(raw) ? raw : (raw?.results || raw?.items || []);
+  const items = arr.map(u => ({
+    id: u.id,
+    name: u.name || `${u.first_name || ''} ${u.last_name || ''}`.trim(),
+    email: u.email || "",
+    status: u.status,                         // active|inactive|pending|...
+    role: u.role,                             // account_admin|account_user|project_admin
+    company: u.company_name || "",
+  }));
+  // HQ puro no devuelve total estándar; mantenemos 'next' por offset manual
+  // Si ya usas limit/offset, calcula next:
+  const next = (Array.isArray(arr) && arr.length === (raw?.limit || 0))
+    ? (raw?.offset || 0) + arr.length
+    : null;
+
+  return { items, next: Number.isFinite(next) ? next : null };
 }
 
 // ------------------ Miembros de Proyecto ------------------
@@ -263,5 +319,7 @@ module.exports = {
   createProject,
   applyTemplateToProject,
   activateDocs,
-  ensureProjectMember
+  ensureProjectMember,
+  listAccountUsers,
+  normalizeAccountUsersResponse
 };
