@@ -2,14 +2,18 @@ const express = require('express');
 const path = require('path');
 const logger = require('morgan');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
+
 const { port } = require('./config/env');
 
 const app = express();
+
 app.use(logger('dev'));
 app.use(cors({
   origin: 'http://localhost:5000',
   credentials: true,
 }));
+app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
