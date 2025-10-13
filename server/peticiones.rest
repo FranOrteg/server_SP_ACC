@@ -23,7 +23,7 @@
 
 ### ADMIN / TEMPLATES
 @TEMPLATE_ID = labit-standard-v1
-@CODE = 010
+@CODE = 020
 @NAME = Demo
 @TWIN_ID = PRJ-001-DEMO
 
@@ -84,7 +84,8 @@ Content-Type: application/json
   ]
 }
 
-
+### Listar todos los sitios del tenant
+GET {{host}}{{urlSP}}/sites?limit=300
 
 ################################################################################
 # ACC (descubrimiento rápido)

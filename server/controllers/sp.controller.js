@@ -9,11 +9,33 @@ async function root(req, res, next) {
   } catch (e) { next(e); }
 }
 
+async function listAllSites(req, res, next) {
+  try {
+    const { limit } = req.query;
+    const host = new URL((await sp.getRootSite()).webUrl).hostname;
+    const lim = Number(limit) > 0 ? Number(limit) : 500;
+    const results = await sp.listAllSites({ preferHostname: host, limit: lim });
+    res.json(results);
+  } catch (e) { next(e); }
+}
+
 async function findSites(req, res, next) {
   try {
-    const { q, hostname } = req.query;
-    // si no te pasan hostname, usa el del root para filtrar por tu tenant
+    const { q, hostname, all, limit } = req.query;
     const host = hostname || new URL((await sp.getRootSite()).webUrl).hostname;
+
+    // ✅ si all=true, ignora q y tira por listAllSites
+    if (String(all).toLowerCase() === 'true') {
+      const lim = Number(limit) > 0 ? Number(limit) : 500;
+      const results = await sp.listAllSites({ preferHostname: host, limit: lim });
+      return res.json(results);
+    }
+
+    // aquí sólo entra si no es "all=true"
+    if (!q || q.length < 2) {
+      return res.status(400).json({ error: 'q debe tener al menos 2 caracteres' });
+    }
+
     const results = await sp.findSites(q, host);
     res.json(results);
   } catch (e) { next(e); }
@@ -31,7 +53,6 @@ async function listDrivesByUrl(req, res, next) {
 async function resolveSite(req, res, next) {
   try {
     const { url, hostname, path } = req.query;
-    // Soporta ambas formas: ?url=...  o  ?hostname=...&path=...
     const site = await sp.resolveSiteIdFlexible({ url, hostname, path });
     res.json({ id: site.id, webUrl: site.webUrl, displayName: site.displayName });
   } catch (e) { next(e); }
@@ -49,13 +70,11 @@ async function listDrives(req, res, next) {
 async function listDrivesByPath(req, res, next) {
   try {
     const { url, hostname, path } = req.query;
-
     if (url) {
       const site = await sp.resolveSiteIdFlexible({ url });
       const drives = await sp.listSiteDrives(site.id);
       return res.json(drives);
     }
-
     if (!hostname || !path) return res.status(400).json({ error: 'hostname y path son obligatorios (o usa url=...)' });
     const drives = await sp.listDrivesBySitePath(hostname, path);
     res.json(drives);
@@ -80,14 +99,14 @@ async function itemByPath(req, res, next) {
   } catch (e) { next(e); }
 }
 
-
-module.exports = { 
-    resolveSite, 
-    listDrives, 
-    listDrivesByPath, 
-    listFolder, 
-    root,
-    findSites,
-    listDrivesByUrl,
-    itemByPath
+module.exports = {
+  resolveSite,
+  listDrives,
+  listDrivesByPath,
+  listFolder,
+  root,
+  findSites,
+  listAllSites,
+  listDrivesByUrl,
+  itemByPath
 };

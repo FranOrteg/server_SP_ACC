@@ -3,6 +3,7 @@ const { graphGet, graphGetStream, graphPost } = require('../clients/graphClient'
 const { pipeline } = require('node:stream/promises');
 const fs = require('fs');
 const path = require('path');
+const { spoAdminGet } = require('../clients/spoClient');
 
 // util local
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -31,7 +32,6 @@ async function getSiteDisplayNameById(siteId) {
   return name;
 }
 
-
 async function getRootSite() {
   const { data } = await graphGet('/sites/root?$select=id,webUrl,displayName');
   return data;
@@ -49,6 +49,185 @@ async function findSites(q, preferHostname) {
   }
   return list;
 }
+
+// === helpers (puedes pegarlos junto a otros helpers) ===
+function tryGet(obj, ...keys) {
+  for (const k of keys) if (obj && obj[k] != null) return obj[k];
+  return undefined;
+}
+
+function mapToSiteRow(x) {
+  const webUrl = tryGet(x, 'Url', 'WebFullUrl', 'Path', 'UrlDecoded', 'UrlPath');
+  const displayName = tryGet(x, 'Title', 'DisplayName', 'Name') || '';
+  const id = tryGet(x, 'SiteId', 'Id', 'siteId');
+  if (!webUrl) return null;
+  return { id, webUrl, displayName };
+}
+
+function parseSearchRows(resp) {
+  // Normaliza raíz: resp.d?.query o resp.PrimaryQueryResult
+  const root =
+    resp?.d?.query ||
+      resp?.query || // por si acaso
+      resp?.PrimaryQueryResult
+      ? resp
+      : null;
+
+  const pqr = root?.PrimaryQueryResult || resp?.PrimaryQueryResult;
+  const table = pqr?.RelevantResults?.Table;
+  const rows = table?.Rows?.results || table?.Rows || table?.rows || [];
+  const out = [];
+
+  for (const row of rows) {
+    // Cells puede venir como { Cells: { results: [...] } } o { Cells: [...] }
+    const cellsRaw = row?.Cells?.results || row?.Cells || row?.cells || [];
+    const obj = {};
+    for (const c of cellsRaw) {
+      const k = c?.Key ?? c?.key;
+      const v = c?.Value ?? c?.value;
+      if (k) obj[k] = v;
+    }
+
+    // normaliza campos
+    const webUrl =
+      obj.Path ||
+      obj.SPSiteUrl ||
+      obj.SPWebUrl ||
+      obj.Url ||
+      obj.WebFullUrl ||
+      obj.UrlPath ||
+      null;
+
+    const displayName =
+      obj.Title ||
+      obj.SiteTitle ||
+      obj.Name ||
+      '';
+
+    const id = obj.SiteId || obj.SPSiteId || obj.siteid || null;
+
+    if (webUrl) out.push({ id, webUrl, displayName });
+  }
+
+  return out;
+}
+/* -------------------------- listAllSites (SPO) -------------------------- */
+
+async function listAllSites({ preferHostname, limit = 500 } = {}) {
+  // 1) Intento: SPO.Tenant/sites con paginación simple por startIndex
+  const out = [];
+  let usedTenantApi = false;
+  try {
+    let startIndex = 0;
+    while (out.length < limit) {
+      const path = `/_api/SPO.Tenant/sites?includePersonalSite=false&startIndex=${startIndex}`;
+      const { data } = await spoAdminGet(path, { Accept: 'application/json;odata=nometadata' });
+      usedTenantApi = true;
+      const rows = data?.value || data?.d?.Sites?.results || data?.d?.results || [];
+      if (!Array.isArray(rows) || rows.length === 0) break;
+
+      for (const r of rows) {
+        const row = mapToSiteRow(r);
+        if (!row) continue;
+        if (preferHostname) {
+          try {
+            if (!new URL(row.webUrl).hostname.includes(preferHostname)) continue;
+          } catch { continue; }
+        }
+        out.push(row);
+        if (out.length >= limit) break;
+      }
+      startIndex += rows.length;
+    }
+  } catch (e) {
+    // Cualquier error → caemos a Search API
+    // (en tus logs es 500, así que entra aquí)
+  }
+
+  if (out.length > 0) {
+    // Completar id/webUrl/displayName vía Graph si quieres (opcional)
+    const maxConc = 5;
+    let i = 0;
+    async function worker() {
+      while (i < out.length) {
+        const my = i++;
+        const u = out[my];
+        try {
+          const s = await resolveSiteIdFlexible({ url: u.webUrl });
+          out[my] = {
+            id: s?.id || u.id || null,
+            webUrl: s?.webUrl || u.webUrl,
+            displayName: s?.displayName || u.displayName || null
+          };
+        } catch {
+          // deja el row tal cual si no se puede resolver
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(maxConc, out.length) }, () => worker()));
+    return out.slice(0, limit);
+  }
+
+  // 2) Fallback: Search API (contentclass:STS_Site)
+  // GET /_api/search/query
+  const rowlimit = Math.min(500, limit);
+  const q = encodeURIComponent("contentclass:STS_Site");
+  const select = encodeURIComponent("Title,Path,SiteId");
+
+  try {
+    const { data } = await spoAdminGet(
+      `/_api/search/query?querytext='${q}'&trimduplicates=false&rowlimit=${rowlimit}&selectproperties='${select}'`,
+      { Accept: 'application/json;odata=verbose' }
+    );
+
+    const list = parseSearchRows(data?.d?.query || data) || [];
+    let filtered = list;
+    if (preferHostname) {
+      filtered = list.filter(s => {
+        try { return new URL(s.webUrl).hostname.includes(preferHostname); }
+        catch { return false; }
+      });
+    }
+
+    if (filtered.length > 0) {
+      // (opcional) enriquecer con resolveSiteIdFlexible en lotes como ya tienes
+      return filtered.slice(0, limit);
+    }
+  } catch (e) {
+    // 3) Último intento: POST /_api/search/postquery (algunos tenants responden mejor con POST)
+    try {
+      const body = {
+        request: {
+          Querytext: "contentclass:STS_Site",
+          TrimDuplicates: false,
+          RowLimit: rowlimit,
+          SelectProperties: { results: ["Title", "Path", "SiteId", "SPSiteUrl", "SPWebUrl", "SiteTitle"] }
+        }
+      };
+      const { spoAdminPost } = require('../clients/spoClient');
+      const { data } = await spoAdminPost(
+        '/_api/search/postquery',
+        body,
+        { Accept: 'application/json;odata=verbose' }
+      );
+      const list = parseSearchRows(data?.d?.postquery || data) || [];
+
+      if (preferHostname) {
+        list = list.filter(s => {
+          try { return new URL(s.webUrl).hostname.includes(preferHostname); }
+          catch { return false; }
+        });
+      }
+      return list.slice(0, limit);
+    } catch (e2) {
+      const why = usedTenantApi ? 'SPO.Tenant/sites falló y Search también' : 'Search falló';
+      const err = new Error(`No se pudo enumerar sitios (${why}).`);
+      err.status = 502;
+      throw err;
+    }
+  }
+}
+
 
 async function listDrivesByUrl(siteUrl) {
   const site = await resolveSiteIdFlexible({ url: siteUrl });
@@ -219,7 +398,7 @@ function isGenericDocLibName(n) {
 }
 
 // --- cachés simples para no repetir llamadas ---
-const _siteNameByIdCache  = new Map();   // key: siteId  -> displayName
+const _siteNameByIdCache = new Map();   // key: siteId  -> displayName
 const _siteNameByUrlCache = new Map();   // key: host+rootPath -> displayName
 
 async function getSiteDisplayNameById(siteId) {
@@ -243,7 +422,7 @@ async function getSiteDisplayNameFromAnyUrl(url) {
   const u = parseSiteUrl(url);
   if (!u) return null;
   const root = extractSiteRootPath(u.path);          // → "/sites/KNOWLEDGE"
-  const key  = `${u.hostname}${root}`.toLowerCase(); // cache key
+  const key = `${u.hostname}${root}`.toLowerCase(); // cache key
   if (_siteNameByUrlCache.has(key)) return _siteNameByUrlCache.get(key);
 
   // Igual que hace tu find-sites, pero yendo directo al root del sitio
@@ -261,8 +440,8 @@ async function getSiteDisplayNameFromAnyUrl(url) {
 async function getSiteNameForItem(driveId, itemId) {
   try {
     const meta = await getItemMeta(driveId, itemId);
-    const pr   = meta?.parentReference || {};
-    const siteIdFromItem  = pr.siteId || null;
+    const pr = meta?.parentReference || {};
+    const siteIdFromItem = pr.siteId || null;
     const siteUrlFromItem = pr.siteUrl || meta?.webUrl || null;
 
     // 1) Si el item trae siteId → usar displayName del propio sitio
@@ -382,6 +561,7 @@ module.exports = {
   getRootSite,
   findSites,
   listDrivesByUrl,
+  listAllSites,
 
   // listados
   listSiteDrives,
