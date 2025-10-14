@@ -87,6 +87,9 @@ Content-Type: application/json
 ### Listar todos los sitios del tenant
 GET {{host}}{{urlSP}}/sites?limit=300
 
+### Listar los usuarios del tenant
+GET {{host}}{{urlSP}}/users?q=support&limit=25
+
 ################################################################################
 # ACC (descubrimiento rápido)
 ################################################################################

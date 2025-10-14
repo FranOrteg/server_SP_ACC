@@ -228,6 +228,52 @@ async function listAllSites({ preferHostname, limit = 500 } = {}) {
   }
 }
 
+// --- Buscar usuarios del tenant (Microsoft Graph) ---
+async function searchSpUsers({ q, limit = 25 }) {
+  const needle = String(q || '').trim();
+  if (needle.length < 2) return [];
+
+  const top = Math.min(Math.max(parseInt(limit, 10) || 25, 1), 100);
+
+  // 1) Intento con $search (requiere header ConsistencyLevel: eventual)
+  try {
+    const { data } = await graphGet(
+      `/users?$search="${needle}"&$top=${top}`,
+      { headers: { ConsistencyLevel: 'eventual' } }
+    );
+    const rows = Array.isArray(data?.value) ? data.value : [];
+    return rows
+      .map(u => ({
+        name: u.displayName || '',
+        email: u.mail || u.userPrincipalName || '',
+        company: u.companyName || '',
+        status: u.accountEnabled === false ? 'disabled' : 'active',
+      }))
+      .filter(u => u.email);
+  } catch (_) {
+    // si falla $search (permisos/tenant), probamos con $filter startswith
+  }
+
+  // 2) Fallback con $filter startswith(...)
+  const esc = (s) => String(s).replace(/'/g, "''"); // escapar comillas
+  const filter =
+    `startswith(displayName,'${esc(needle)}')` +
+    ` or startswith(mail,'${esc(needle)}')` +
+    ` or startswith(userPrincipalName,'${esc(needle)}')`;
+
+  const { data } = await graphGet(`/users?$filter=${encodeURIComponent(filter)}&$top=${top}`);
+  const rows = Array.isArray(data?.value) ? data.value : [];
+  return rows
+    .map(u => ({
+      name: u.displayName || '',
+      email: u.mail || u.userPrincipalName || '',
+      company: u.companyName || '',
+      status: u.accountEnabled === false ? 'disabled' : 'active',
+    }))
+    .filter(u => u.email);
+}
+
+
 
 async function listDrivesByUrl(siteUrl) {
   const site = await resolveSiteIdFlexible({ url: siteUrl });
@@ -574,5 +620,7 @@ module.exports = {
 
   // IO
   downloadItemToTmp,
-  createUploadSession
+  createUploadSession,
+
+  searchSpUsers,
 };

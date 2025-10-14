@@ -14,5 +14,6 @@ router.get('/drives', ctrl.listDrives);
 router.get('/drives-by-path', ctrl.listDrivesByPath);
 router.get('/list', ctrl.listFolder);
 router.get('/item-by-path', ctrl.itemByPath);
+router.get('/users', ctrl.searchUsers);
 
 module.exports = router;

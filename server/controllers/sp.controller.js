@@ -99,6 +99,14 @@ async function itemByPath(req, res, next) {
   } catch (e) { next(e); }
 }
 
+async function searchUsers(req, res, next) {
+  try {
+    const { q = '', limit } = req.query;
+    const items = await sp.searchSpUsers({ q, limit });
+    res.json({ items });
+  } catch (e) { next(e); }
+}
+
 module.exports = {
   resolveSite,
   listDrives,
@@ -108,5 +116,6 @@ module.exports = {
   findSites,
   listAllSites,
   listDrivesByUrl,
-  itemByPath
+  itemByPath,
+  searchUsers
 };
