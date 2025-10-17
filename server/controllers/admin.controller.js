@@ -371,44 +371,75 @@ async function createSpSite(req, res, next) {
 
 async function createTwin(req, res, next) {
   try {
-    const { hubId, accountId, sp = {}, templateId, template, vars = {}, twinId, code, name, memberEmail, members = [] } = req.body || {};
+    const {
+      hubId, accountId,
+      sp = {},
+      templateId, template,
+      vars = {},
+      twinId,
+      code, name,
+      memberEmail,
+      members = [],
+      accMembers = []     
+    } = req.body || {};
+
     if (!(hubId || accountId) || !templateId || !sp?.url) {
       return res.status(400).json({ error: 'hubId|accountId, templateId y sp.url son obligatorios' });
     }
 
+    // Cargar plantilla
     let tplObj = template;
     if (tplObj && typeof tplObj === 'string') {
       const loaded = await templates.loadTemplate(tplObj);
       if (!loaded) return res.status(404).json({ error: `template "${template}" not found` });
       tplObj = loaded;
     }
-
     const adminTpl = await templates.loadTemplate(templateId).catch(() => null);
+
+    // Nombre
     const resolvedName =
       name ||
-      (adminTpl ? templates.expandName(adminTpl, vars) : (tplObj ? templates.expandName(tplObj, vars) : vars.name));
-
+      (adminTpl ? templates.expandName(adminTpl, vars)
+        : (tplObj ? templates.expandName(tplObj, vars)
+          : vars.name));
     if (!resolvedName) return res.status(400).json({ error: 'name (o vars.name) es obligatorio' });
 
     logger.mk('TWIN-CTRL').info('Iniciando creación de twin', {
       name: resolvedName, accId: accountId || hubId, spUrl: sp.url
     });
 
+    // === ACC: crear proyecto
     const accCreated = await accAdmin.createProject({
       hubId, accountId, name: resolvedName, code, vars
     });
 
-    let memberResult = null;
-    if (memberEmail) {
-      memberResult = await accAdmin.ensureProjectMember({
-        accountId: accCreated.accountId,
-        projectId: accCreated.projectId,
-        email: memberEmail,
-        makeProjectAdmin: true,
-        grantDocs: 'admin'
-      }).catch(e => ({ ok: false, error: e?.message || 'invite_failed' }));
+    // === ACC: invitar miembros (NUEVO)
+    // Acepta: memberEmail, members[{user,role}], accMembers[{email,makeProjectAdmin,grantDocs}]
+    const normalizedAcc = normalizeAccMembersFromBody({ memberEmail, members, accMembers });
+    let accMembership = null;
+    if (normalizedAcc.length) {
+      accMembership = [];
+      for (const m of normalizedAcc) {
+        try {
+          const r = await accAdmin.ensureProjectMember({
+            accountId: accCreated.accountId,
+            projectId: accCreated.projectId,
+            email: m.email,
+            makeProjectAdmin: !!m.makeProjectAdmin,
+            grantDocs: (m.grantDocs || 'viewer')
+          });
+          accMembership.push(r);
+        } catch (e) {
+          const msg = e?.response?.data?.detail || e?.message || 'invite_failed';
+          accMembership.push({ ok: false, email: m.email, error: msg });
+        }
+      }
     }
 
+    // (mantener compat: invitación directa solo por memberEmail si no vino en arrays)
+    // Nota: normalizeAccMembersFromBody ya lo incluye; no hace falta duplicar.
+
+    // === ACC: aplicar plantilla si existe
     const tplForAcc = adminTpl || tplObj;
     if (tplForAcc) {
       await accAdmin.applyTemplateToProject({
@@ -422,6 +453,7 @@ async function createTwin(req, res, next) {
 
     logger.mk('TWIN-CTRL').info('ACC listo, creando sitio SP', { projectId: accCreated.projectId });
 
+    // === SP: crear sitio
     const spCreated = await spAdmin.createSite({
       type: sp.type || 'CommunicationSite',
       title: resolvedName,
@@ -429,6 +461,7 @@ async function createTwin(req, res, next) {
       description: sp.description
     });
 
+    // === SP: aplicar plantilla
     const spApplied = await spAdmin.applyTemplateToSite({
       siteId: spCreated.siteId,
       siteUrl: spCreated.siteUrl,
@@ -436,7 +469,7 @@ async function createTwin(req, res, next) {
       resolvedName
     });
 
-    // (Opcional) asignar miembros al sitio SP si vienen en la petición
+    // === SP: asignar miembros (como ya estaba)
     let spMembership = null;
     if (Array.isArray(members) && members.length) {
       spMembership = await spAdmin.assignMembersToSite({
@@ -447,6 +480,7 @@ async function createTwin(req, res, next) {
       logger.mk('TWIN-CTRL').info('Miembros SP asignados (Twin)', spMembership);
     }
 
+    // Guardar twin
     const link = await twinSvc.saveLink({
       twinId: twinId || `${accCreated.projectId}__${spCreated.siteId}`,
       projectId: accCreated.projectId,
@@ -459,12 +493,22 @@ async function createTwin(req, res, next) {
       twinId: link.twinId, projectId: accCreated.projectId, siteId: spCreated.siteId
     });
 
+    // Respuesta
     res.json({
       ok: true,
       name: resolvedName,
       link,
-      acc: { projectId: accCreated.projectId, accountId: accCreated.accountId, dm: accCreated.dm, member: memberResult },
-      sp: { ...spCreated, applied: spApplied, ...(spMembership ? { membership: spMembership } : {}) }
+      acc: {
+        projectId: accCreated.projectId,
+        accountId: accCreated.accountId,
+        dm: accCreated.dm,
+        ...(accMembership ? { membership: accMembership } : {})
+      },
+      sp: {
+        ...spCreated,
+        applied: spApplied,
+        ...(spMembership ? { membership: spMembership } : {})
+      }
     });
   } catch (e) {
     const { status, detail } = mapError(e, 'create_twin_failed');
@@ -472,6 +516,7 @@ async function createTwin(req, res, next) {
     res.status(status === 409 ? 400 : status).json({ error: { status, detail } });
   }
 }
+
 
 // ------------------------- Comprobar usuarios del Tenant SP -------------------------
 

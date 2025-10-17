@@ -23,9 +23,9 @@
 
 ### ADMIN / TEMPLATES
 @TEMPLATE_ID = labit-standard-v1
-@CODE = 020
-@NAME = Demo
-@TWIN_ID = PRJ-001-DEMO
+@CODE = 045
+@NAME = Test45
+@TWIN_ID = PRJ-045-TEST
 
 ################################################################################
 # HEALTH
