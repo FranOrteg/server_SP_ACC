@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const acc = require('./acc.service');
 const sp = require('./sharepoint.service');
+const { graphGet } = require('../clients/graphClient');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const FILE = path.join(DATA_DIR, 'twins.json');
@@ -42,14 +43,12 @@ async function getStatus(twinId) {
   // SP
   let spOk = false, spName = null, spErr = null, webUrl = null;
   try {
-    const site = await sp.getRootSite(); // o resolve por tw.sp.siteId si lo quieres exacto
-    // Mejor: leer concretamente ese siteId:
-    const name = await (async () => {
-      try { return await sp.getSiteDisplayNameById(tw.sp.siteId); } catch { return null; }
-    })();
-    spOk = !!(tw.sp.siteId);
-    spName = name;
-    webUrl = null; // si quieres, pide /sites/{id}?$select=webUrl
+    // p.ej. "labitgroup.sharepoint.com,80f7...f31,b37c..."
+    const sid = encodeURIComponent(tw.sp.siteId);
+    const { data } = await graphGet(`/sites/${sid}?$select=webUrl,displayName`);
+    spOk = !!tw.sp.siteId;
+    spName = data?.displayName || null;
+    webUrl = data?.webUrl || null;
   } catch (e) {
     spErr = e?.response?.status || e.message;
   }
