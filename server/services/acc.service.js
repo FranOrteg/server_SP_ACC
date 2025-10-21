@@ -29,7 +29,7 @@ async function listProjects(hubId, { all = false, limit = 50 } = {}) {
   if (!all) return await aps.apiGet(`${base}?page[limit]=${limit}`);
   let url = `${base}?page[limit]=${limit}`;
   const out = [];
-  for (;;) {
+  for (; ;) {
     const page = await aps.apiGet(url);
     if (Array.isArray(page.data)) out.push(...page.data);
     const next = page.links?.next?.href;
@@ -51,7 +51,7 @@ async function listFolderContents(projectId, folderId, { all = false, limit = 20
   let url = `${base}?page[limit]=${limit}`;
   const included = [];
   const data = [];
-  for (;;) {
+  for (; ;) {
     const page = await aps.apiGet(url);
     if (Array.isArray(page.data)) data.push(...page.data);
     if (Array.isArray(page.included)) included.push(...page.included);
@@ -132,15 +132,13 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
   const { bucketKey, objectName } = parseStorageUrn(storageUrn);
   const size = fs.statSync(localFilePath).size;
 
-  let region = (process.env.APS_REGION || 'US').toUpperCase();
-  let hubId = null;
-  if (opts.projectId) {
-    try {
-      const { hubId: h, hubRegion } = await getTopFoldersByProjectId(opts.projectId, { preferHubId: opts.preferHubId });
-      hubId = h;
-      region = (hubRegion || region).toUpperCase();
-    } catch (_) {}
+  // Scoped uploads requieren el contexto real del proyecto
+  if (!opts.projectId) {
+    throw new Error('uploadFileToStorage: falta projectId (requerido para signeds3upload?scoped=true)');
   }
+  const { hubId, hubRegion } = await getTopFoldersByProjectId(opts.projectId, { preferHubId: opts.preferHubId });
+  const region = (hubRegion || process.env.APS_REGION || 'US').toUpperCase();
+
 
   console.log('[UPLOAD] storageUrn:', storageUrn);
   console.log('[UPLOAD] hubId:', hubId, 'region:', region);
@@ -153,11 +151,11 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
   try {
     const initUrl = `${base}&firstPart=1&parts=1`;
     console.log('[UPLOAD] GET', initUrl);
-    init = await aps.apiGet(initUrl, { headers: { 'x-ads-region': region } });
+    init = await aps.apiGet(initUrl, { headers: { 'x-ads-region': region, 'x-ads-hub-id': hubId } });
   } catch (e) {
     console.log('[UPLOAD] GET init failed, trying POST-init… reason:', e?.response?.data || e?.message);
     const body = { contentType: 'application/octet-stream', contentLength: size };
-    init = await aps.apiPost(base, body, { headers: { 'x-ads-region': region } });
+    init = await aps.apiPost(base, body, { headers: { 'x-ads-region': region, 'x-ads-hub-id': hubId } });
   }
 
   console.log('[UPLOAD][init] raw resp keys:', Object.keys(init || {}));
@@ -180,7 +178,7 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
 
   const completeBody = { uploadKey };
   console.log('[UPLOAD] POST', base, 'body:', completeBody);
-  const fin = await aps.apiPost(base, completeBody, { headers: { 'x-ads-region': region } });
+  const fin = await aps.apiPost(base, completeBody, { headers: { 'x-ads-region': region, 'x-ads-hub-id': hubId } });
   console.log('[UPLOAD][complete] ok. keys:', Object.keys(fin || {}));
 
   await sleep(300);
@@ -318,7 +316,7 @@ async function getTopFoldersByProjectId(projectId, opts = {}) {
 
       const hubRegion =
         (h?.attributes?.extension?.data?.region ||
-         h?.attributes?.region || 'US').toUpperCase();
+          h?.attributes?.region || 'US').toUpperCase();
 
       // cacheamos el match para acelerar siguientes llamadas
       _rememberProjectHub(projectIdDM, hubIdDM, hubRegion);

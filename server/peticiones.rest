@@ -18,6 +18,7 @@
 @SP_SITE_URL = https://{{SPO_TENANT_HOST}}/sites/LBAN0X
 @SP_DRIVE_ID = b!DQOmTDWg4UCWLUzjVxfVHsgBQQSZtqtIhu-TIGdbQBu81Wu7u7k0S6njwic8UIS3
 @SP_ITEM_ID  = 01KWI7RKN6Y2GOVW7725BZO354PWSELRRZ
+@SP_ITEM_ID_FILE = 01KWI7RKLPNMDNVXXR5VHYJJLTIRP23U5C
 
 @ACC_FOLDER_ID = urn:adsk.wipprod:fs.folder:co._HMyOfTySzGn6hpRrYrdvA
 
@@ -253,10 +254,10 @@ GET {{host}}{{urlAdmin}}/twin
 ################################################################################
 
 ### (Bridge) Copia fichero SP → ACC
-GET {{host}}{{urlBridge}}/sp-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{ACC_FOLDER_ID}}&fileName={{NAME}}
+GET {{host}}{{urlBridge}}/sp-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID_FILE}}&projectId={{PROJECT_ID}}&folderId={{ACC_FOLDER_ID}}&fileName=FLOREN.jpg
 
 ### (Bridge) Copia recursiva (dry-run)
-POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{ACC_FOLDER_ID}}&mode=upsert&dryRun=true
+POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&projectId={{PROJECT_ID}}&folderId={{ACC_FOLDER_ID}}&mode=upsert&dryRun=false
 
 ### (Audit) Comparar SP vs ACC desde fecha
 GET {{host}}{{urlAudit}}/sp-to-acc?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{ACC_FOLDER_ID}}&since=2025-09-01T00:00:00Z&mtimePolicy=ignore

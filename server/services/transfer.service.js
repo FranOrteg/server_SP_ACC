@@ -11,7 +11,7 @@ async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, f
 
   try {
     const storageUrn = await acc.createStorage(projectId, folderId, name);
-    await acc.uploadFileToStorage(storageUrn, tmpPath);
+    await acc.uploadFileToStorage(storageUrn, tmpPath, { projectId });
 
     const existing = await acc.findItemByName(projectId, folderId, name);
 
