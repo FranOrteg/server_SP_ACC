@@ -27,6 +27,9 @@
 @CODE = 045
 @NAME = Test45
 @TWIN_ID = PRJ-045-TEST
+@DEST_PATH = /Project Files/LBAN0X/1_COMM
+@DEST_PATH_ROOT = /Project Files/LBAN0X
+
 
 ################################################################################
 # HEALTH
@@ -261,6 +264,32 @@ POST {{host}}{{urlBridge}}/sp-tree-to-acc?driveId={{SP_DRIVE_ID}}&itemId={{SP_IT
 
 ### (Audit) Comparar SP vs ACC desde fecha
 GET {{host}}{{urlAudit}}/sp-to-acc?projectId={{PROJECT_ID}}&driveId={{SP_DRIVE_ID}}&itemId={{SP_ITEM_ID}}&accFolderId={{ACC_FOLDER_ID}}&since=2025-09-01T00:00:00Z&mtimePolicy=ignore
+
+### Dest File
+POST {{host}}{{urlBridge}}/sp-to-acc
+Content-Type: application/json
+
+{
+  "driveId": "{{SP_DRIVE_ID}}",
+  "itemId": "{{SP_ITEM_ID_FILE}}",
+  "projectId": "{{PROJECT_ID}}",
+  "destPath": "{{DEST_PATH}}",
+  "onConflict": "rename"
+}
+
+### Dest root
+POST {{host}}{{urlBridge}}/sp-tree-to-acc
+Content-Type: application/json
+
+{
+  "driveId": "{{SP_DRIVE_ID}}",
+  "itemId": "{{SP_ITEM_ID}}",
+  "projectId": "{{PROJECT_ID}}",
+  "destPath": "{{DEST_PATH_ROOT}}",
+  "mode": "rename",
+  "dryRun": false
+}
+
 
 
 ################################################################################

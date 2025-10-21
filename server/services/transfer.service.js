@@ -1,31 +1,62 @@
 // services/transfer.service.js
+
 const sp = require('./sharepoint.service');
 const acc = require('./acc.service');
 const fs = require('fs');
+const path = require('path');
 
-async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, fileName }) {
+// Devuelve un nombre disponible si existe colisión (filename, filename (1).ext, filename (2).ext, …)
+async function nextAvailableName(projectId, folderId, fileName) {
+  const ext = path.extname(fileName);
+  const base = path.basename(fileName, ext);
+  let n = 0;
+  let candidate = fileName;
+
+  // Buscar por nombre exacto
+  let exists = await acc.findItemByName(projectId, folderId, candidate);
+  while (exists) {
+    n += 1;
+    candidate = ext
+      ? `${base} (${n})${ext}`
+      : `${base} (${n})`;
+    exists = await acc.findItemByName(projectId, folderId, candidate);
+  }
+  return candidate;
+}
+
+async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, fileName, onConflict = 'version' }) {
   const tmpPath = await sp.downloadItemToTmp(driveId, itemId);
-
   const meta = await sp.getItemMeta(driveId, itemId);
-  const name = fileName || meta.name || (itemId + '.bin');
+  let name = fileName || meta.name || (itemId + '.bin');
 
   try {
+    // conflicto (si existe mismo nombre en carpeta destino)
+    const existing = await acc.findItemByName(projectId, folderId, name);
+    if (existing) {
+      if (onConflict === 'skip') {
+        return { action: 'skipped', reason: 'exists', itemId: existing.id, name };
+      }
+      if (onConflict === 'rename') {
+        name = await nextAvailableName(projectId, folderId, name);
+      }
+      // onConflict === 'version' → seguimos con el mismo nombre
+    }
+
     const storageUrn = await acc.createStorage(projectId, folderId, name);
     await acc.uploadFileToStorage(storageUrn, tmpPath, { projectId });
 
-    const existing = await acc.findItemByName(projectId, folderId, name);
-
-    if (existing) {
-      const ver = await acc.createVersion(projectId, existing.id, name, storageUrn);
-      return { action: 'version', itemId: existing.id, versionId: ver.data?.id, storage: storageUrn };
-    } else {
+    if (!existing || onConflict === 'rename') {
       const created = await acc.createItem(projectId, folderId, name, storageUrn);
       return {
         action: 'item',
         itemId: created.data?.id,
         versionId: (created.included || []).find(i => i.type === 'versions')?.id,
-        storage: storageUrn
+        storage: storageUrn,
+        name
       };
+    } else {
+      const ver = await acc.createVersion(projectId, existing.id, name, storageUrn);
+      return { action: 'version', itemId: existing.id, versionId: ver.data?.id, storage: storageUrn, name };
     }
   } finally {
     try { fs.unlinkSync(tmpPath); } catch {}
@@ -37,38 +68,32 @@ async function copySpTreeToAcc({
   itemId,
   projectId,
   targetFolderId,
-  mode = 'upsert',
+  mode = 'upsert',  // upsert | skip | rename
   dryRun = false,
   onLog = () => {}
 }) {
   const started = Date.now();
   const summary = { foldersCreated: 0, filesUploaded: 0, versionsCreated: 0, skipped: 0, bytesUploaded: 0 };
 
-  // 1) metadatos y nombre del sitio
   const root = await sp.getItemMeta(driveId, itemId);
   if (!root) throw new Error(`SP item ${itemId} no encontrado`);
 
-  const siteName = await sp.getSiteNameForItem(driveId, itemId); // ← **LBKN01**, por ejemplo
+  const siteName = await sp.getSiteNameForItem(driveId, itemId);
   onLog(`📦 sitio SP: ${siteName}`);
 
-  // 2) carpeta del sitio (hermana de otros sitios) bajo la carpeta objetivo
   const siteFolderId = await ensureAccFolder(projectId, targetFolderId, siteName, dryRun, onLog, summary);
 
-  // 3) decidir VOLCAT (contenido directo o subcarpeta)
   if (root.folder) {
     const treatAsRoot = sp.isDocLibRoot(root) || sp.isDriveRoot(root);
     if (treatAsRoot) {
-      // Copiamos CONTENIDO de la biblioteca directamente dentro de <siteName>
       onLog(`➡️  copiando contenido de la biblioteca → "${siteName}"`);
       await walkFolder(driveId, root, projectId, siteFolderId, mode, dryRun, onLog, summary);
     } else {
-      // Es una subcarpeta concreta: creamos (o usamos) ese subfolder DENTRO del sitio
       const subId = await ensureAccFolder(projectId, siteFolderId, root.name, dryRun, onLog, summary);
       onLog(`➡️  copiando carpeta "${root.name}" dentro de "${siteName}"`);
       await walkFolder(driveId, root, projectId, subId, mode, dryRun, onLog, summary);
     }
   } else {
-    // Un archivo suelto: lo ponemos en la carpeta del sitio
     onLog(`➡️  copiando archivo "${root.name}" dentro de "${siteName}"`);
     await copyOneFile(driveId, root, projectId, siteFolderId, mode, dryRun, onLog, summary);
   }
@@ -76,7 +101,6 @@ async function copySpTreeToAcc({
   return { ok: true, summary, tookMs: Date.now() - started };
 }
 
-// BFS recursivo con tolerancia a fallos (reinstala la función que faltaba)
 async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryRun, onLog, summary) {
   const children = await sp.listChildrenByItem(driveId, spFolder.id);
   for (const child of children) {
@@ -96,12 +120,10 @@ async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryR
   }
 }
 
-
 async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, summary) {
   onLog(`📁 ensure folder: ${name} under ${parentFolderId}`);
   if (dryRun) return parentFolderId;
 
-  // comprobación rápida antes de crear
   const exists = await acc.findChildByName(projectId, parentFolderId, name);
   if (exists && exists.type === 'folders') return exists.id;
 
@@ -111,21 +133,26 @@ async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, s
 }
 
 async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRun, onLog, summary) {
-  const fileName = spItem.name;
+  let fileName = spItem.name;
   const size = spItem.size || 0;
 
-  // ¿ya existe en ACC?
   const existing = await acc.findItemByName(projectId, destFolderId, fileName);
   console.log(`[XFER][file] name=${fileName} size=${size} destFolderId=${destFolderId} exists=${!!existing}`);
 
-  if (existing && mode === 'skip') {
-    onLog(`⏭️  skip (existe): ${fileName}`);
-    summary.skipped++;
-    return;
+  if (existing) {
+    if (mode === 'skip') {
+      onLog(`⏭️  skip (existe): ${fileName}`);
+      summary.skipped++;
+      return;
+    }
+    if (mode === 'rename') {
+      fileName = await nextAvailableName(projectId, destFolderId, fileName);
+    }
   }
 
   if (dryRun) {
-    onLog(`🧪 would upload ${fileName} (${size} bytes) → ${destFolderId} (${existing ? 'new version' : 'new item'})`);
+    const act = existing && mode !== 'rename' ? 'new version' : (existing ? 'renamed item' : 'new item');
+    onLog(`🧪 would upload ${fileName} (${size} bytes) → ${destFolderId} (${act})`);
     return;
   }
 
@@ -135,11 +162,9 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
   try {
     const storageUrn = await acc.createStorage(projectId, destFolderId, fileName);
     console.log(`[XFER][storage] ${storageUrn} → ${fileName} size: ${size}`);
-
-    // **pasa projectId para resolver región del hub**
     await acc.uploadFileToStorage(storageUrn, tmpPath, { projectId });
 
-    if (!existing) {
+    if (!existing || mode === 'rename') {
       const created = await acc.createItem(projectId, destFolderId, fileName, storageUrn);
       const newVersionId = (created.included || []).find(i => i.type === 'versions')?.id;
       console.log(`[XFER][item-created] itemId=${created.data?.id} versionId=${newVersionId} name=${fileName} inFolder=${destFolderId}`);
@@ -158,8 +183,4 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
   }
 }
 
-
-module.exports = { 
-  copySharePointItemToAcc, 
-  copySpTreeToAcc 
-};
+module.exports = { copySharePointItemToAcc, copySpTreeToAcc };
