@@ -15,4 +15,8 @@ router.get('/sp-tree-to-acc', ctrl.spTreeToAcc); // opcional para test
 // --- Sync segmento ---
 router.post('/sync-sp-segment', syncSegment);
 
+// --- Crear Proyecto durante la transferencia del Sitio SP ---
+router.post('/sp-to-new-acc-project', ctrl.spToNewAccProject);
+
+
 module.exports = router;

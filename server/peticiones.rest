@@ -290,6 +290,18 @@ Content-Type: application/json
   "dryRun": false
 }
 
+### (Bridge) Create new ACC project from SP site
+POST {{host}}{{urlBridge}}/sp-to-new-acc-project
+Content-Type: application/json
+
+{
+  "driveId": "{{SP_DRIVE_ID}}",
+  "itemId": "{{SP_ITEM_ID}}",
+  "hubId": "{{HUB_ID}}",
+  "cloneMembersFromProjectId": "{{PROJECT_ID}}",
+  "mode": "rename"
+}
+
 
 
 ################################################################################
