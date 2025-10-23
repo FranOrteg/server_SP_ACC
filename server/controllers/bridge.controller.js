@@ -97,7 +97,7 @@ async function spToNewAccProject(req, res, next) {
         error: 'No se pudo resolver el nombre del sitio de SharePoint',
       });
     }
-    // Evita colisiones con el sufijo “SP”, y ya tienes reintento interno por 409 en createProject
+    // Nombre del proyecto ACC
     const projectName = `${siteName} SP`;
 
     // 3) Crear proyecto ACC (sin plantilla) – esto ya espera aprovisionamiento DM
@@ -115,10 +115,11 @@ async function spToNewAccProject(req, res, next) {
     const projectIdDM = created?.dm?.projectIdDM || `b.${created.projectId}`;
     const hubIdDM = `b.${created.accountId}`;
 
-    // 4) Asegurar carpeta destino en DM (NO usar null)
-    // Ruta destino recomendada: /Project Files/<siteName>
-    const destPath = `/Project Files/${siteName}`;
-    // Crea / resuelve la ruta y devuelve el folderId final
+    // 4) **EVITAR doble "LBAN0X"**:
+    //    Copiamos SIEMPRE bajo la raíz /Project Files (sin añadir <siteName>),
+    //    porque el árbol que viene de SP ya incluye la carpeta raíz "LBAN0X".
+    //    Así se crea solo una vez: /Project Files/LBAN0X/...
+    const destPath = `/Project Files`;
     const targetFolderId = await acc.ensureFolderByPath(projectIdDM, destPath, { preferHubId: hubIdDM });
 
     // 5) Copiar árbol completo de SP → carpeta destino del nuevo proyecto ACC
@@ -257,6 +258,4 @@ async function cloneMembersFallback({ fromProjectId, toProjectId, notify = false
   return { added, skipped, failures, total: src.length, results };
 }
 
-
-
-module.exports = { spToAcc, spTreeToAcc, spToNewAccProject }; 
+module.exports = { spToAcc, spTreeToAcc, spToNewAccProject };
