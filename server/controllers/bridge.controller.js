@@ -6,6 +6,8 @@ const acc = require('../services/acc.service');
 const accAdmin = require('../services/admin.acc.service');
 const spAdmin = require('../services/admin.sp.service');
 const apsUser = require('../clients/apsUserClient');
+const { graphGet } = require('../clients/graphClient');
+const logger = require('../helpers/logger').mk('BRIDGE');
 
 async function spToAcc(req, res, next) {
   try {
@@ -79,6 +81,7 @@ async function spToNewAccProject(req, res, next) {
       hubId,
       accountId,
       cloneMembersFromProjectId,
+      mapSpMembers = true,      // NUEVO: por defecto, copiar miembros de SP
       onConflict = 'version',   // no lo usamos aquí, pero lo dejamos por si lo añades a transfer
       mode = 'upsert',
     } = { ...req.query, ...(req.body || {}) };
@@ -135,7 +138,129 @@ async function spToNewAccProject(req, res, next) {
       onLog: (m) => copyLog.push(m),
     });
 
-    // 6) Clonar miembros desde otro proyecto ACC si se indicó
+    // 6) Mapear miembros del sitio SP al nuevo proyecto ACC
+    let spMembersSummary = null;
+    if (mapSpMembers && !cloneMembersFromProjectId) {
+      logger.info('🔄 Iniciando mapeo de miembros de SP a ACC', { mapSpMembers, cloneMembersFromProjectId });
+      try {
+
+        // Helper para extraer solo la URL del sitio (sin /Shared Documents /Documentos compartidos, etc.)
+        const extractSiteUrl = (url) => {
+          if (!url) return null;
+          try {
+            const urlObj = new URL(url);
+            // Coincidir /sites/{nombre} o /teams/{nombre}
+            const m = urlObj.pathname.match(/\/(sites|teams)\/[^\/]+/i);
+            if (m) return `${urlObj.protocol}//${urlObj.host}${m[0]}`;
+            // Fallback: si no hay match, quitamos cualquier sufijo de biblioteca conocido
+            const knownLibs = [
+              '/Shared Documents',
+              '/Documentos compartidos',
+              '/Documents'
+            ].map(s => s.toLowerCase());
+            const base = urlObj.pathname.split('/').slice(0, 3).join('/'); // "", "sites|teams", "{nombre}" => /sites/foo
+            if (base && (base.toLowerCase().startsWith('/sites/') || base.toLowerCase().startsWith('/teams/'))) {
+              return `${urlObj.protocol}//${urlObj.host}${base}`;
+            }
+            // Si nada cuadra, devolvemos el original
+            return `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
+          } catch {
+            return url;
+          }
+        };
+
+        // 1) Intentar resolver siteUrl a partir del item (puede venir con /Shared%20Documents)
+        logger.debug('Obteniendo metadata del item', { driveId, itemId });
+        const meta = await sp.getItemMeta(driveId, itemId);
+        let rawSiteUrl = meta?.parentReference?.siteUrl || meta?.webUrl || null;
+        logger.debug('siteUrl desde item meta (raw)', { rawSiteUrl, parentReference: meta?.parentReference });
+        let siteUrl = extractSiteUrl(rawSiteUrl);
+        logger.debug('siteUrl extraído desde item', { siteUrl });
+
+        // 2) Si no se pudo extraer del item, probar con el drive
+        if (!siteUrl) {
+          logger.debug('siteUrl no encontrado en item; intentando desde drive');
+          const { data: drv } = await graphGet(`/drives/${encodeURIComponent(driveId)}?$select=name,webUrl,sharepointIds`);
+          rawSiteUrl = drv?.webUrl || null;
+          siteUrl = extractSiteUrl(rawSiteUrl);
+          logger.debug('siteUrl extraído desde drive', {
+            siteUrl,
+            driveWebUrl: drv?.webUrl,
+            siteId: drv?.sharepointIds?.siteId
+          });
+          // 3) Último recurso: si hay siteId en sharepointIds, resolverlo a webUrl
+          if (!siteUrl && drv?.sharepointIds?.siteId) {
+            logger.debug('Resolviendo siteUrl desde siteId via Graph', { siteId: drv.sharepointIds.siteId });
+            const { data: site } = await graphGet(`/sites/${drv.sharepointIds.siteId}?$select=webUrl`);
+            siteUrl = site?.webUrl ? extractSiteUrl(site.webUrl) : null;
+            logger.debug('siteUrl resuelto desde Graph (siteId)', { siteUrl });
+          }
+        }
+
+        if (siteUrl) {
+          logger.info('✅ siteUrl obtenido, obteniendo miembros del sitio', { siteUrl });
+          // Obtener miembros del sitio SP en formato plano
+          const spMembers = await spAdmin.getSiteMembers({ siteUrl, format: 'flat' });
+          const users = spMembers?.users || [];
+          logger.info(`📋 Miembros obtenidos de SP: ${users.length}`, { mode: spMembers?.mode, userCount: users.length });
+
+          if (users.length > 0) {
+            let added = 0, skipped = 0, failures = 0;
+            const results = [];
+
+            for (const u of users) {
+              if (!u.email) {
+                logger.debug('⚠️ Usuario sin email, saltando', { user: u });
+                continue;
+              }
+
+              try {
+                // Mapear rol de SP a ACC
+                const accRole = mapSpRoleToAcc(u.role);
+                logger.debug(`➕ Añadiendo miembro: ${u.email}`, { spRole: u.role, accRole });
+
+                const r = await ensureProjectMemberLocal({
+                  projectId: created.projectId,
+                  email: u.email,
+                  makeProjectAdmin: accRole.makeProjectAdmin,
+                  grantDocs: accRole.grantDocs,
+                  notify: false,
+                });
+
+                results.push({ ok: true, email: u.email, spRole: u.role, accRole, result: r });
+                if (r?.ok && !r?.skipped) {
+                  added++;
+                  logger.info(`✅ Miembro añadido: ${u.email}`);
+                } else {
+                  skipped++;
+                  logger.info(`⏭️ Miembro ya existente: ${u.email}`);
+                }
+              } catch (e) {
+                failures++;
+                const msg = e?.response?.data?.detail || e?.message || 'invite_failed';
+                logger.error(`❌ Error añadiendo miembro ${u.email}:`, { error: msg });
+                results.push({ ok: false, email: u.email, spRole: u.role, error: msg });
+              }
+            }
+
+            spMembersSummary = { added, skipped, failures, total: users.length, results };
+            logger.info('✅ Mapeo de miembros completado', spMembersSummary);
+          } else {
+            logger.warn('⚠️ No se encontraron usuarios en el sitio de SP');
+          }
+        } else {
+          logger.warn('⚠️ No se pudo obtener siteUrl');
+        }
+      } catch (e) {
+        // Si falla la obtención de miembros, lo registramos pero no fallamos la operación completa
+        logger.error('❌ Error en mapeo de miembros de SP', { error: e?.message, stack: e?.stack });
+        spMembersSummary = { error: e?.message || 'Failed to map SP members', added: 0, skipped: 0, failures: 0 };
+      }
+    } else {
+      logger.info('⏭️ Mapeo de miembros de SP desactivado o usando cloneMembersFromProjectId', { mapSpMembers, cloneMembersFromProjectId });
+    }
+
+    // 7) Clonar miembros desde otro proyecto ACC si se indicó (alternativa al mapeo de SP)
     let cloneSummary = null;
     if (cloneMembersFromProjectId) {
       const canCallServiceClone = typeof accAdmin.cloneProjectMembers === 'function';
@@ -152,7 +277,7 @@ async function spToNewAccProject(req, res, next) {
         });
     }
 
-    // 7) Respuesta
+    // 8) Respuesta
     res.json({
       ok: true,
       created: {
@@ -162,6 +287,7 @@ async function spToNewAccProject(req, res, next) {
         name: created.name,
       },
       copy: { ...copyResult, log: copyLog },
+      mappedSpMembers: spMembersSummary,
       clonedMembers: cloneSummary,
     });
   } catch (err) {
@@ -170,6 +296,15 @@ async function spToNewAccProject(req, res, next) {
 }
 
 // --- helpers ACC members (local, sin depender del servicio) ---
+
+// Mapea roles de SharePoint a roles de ACC
+function mapSpRoleToAcc(spRole) {
+  const r = String(spRole || 'Member').toLowerCase();
+  if (r === 'owner') return { makeProjectAdmin: true, grantDocs: 'admin' };
+  if (r === 'visitor') return { makeProjectAdmin: false, grantDocs: 'viewer' };
+  // default Member
+  return { makeProjectAdmin: false, grantDocs: 'member' };
+}
 
 // Normaliza un miembro de Admin API → { email, makeProjectAdmin, grantDocs }
 function normalizeAdminUser(u) {

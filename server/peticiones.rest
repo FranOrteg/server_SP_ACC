@@ -302,7 +302,17 @@ Content-Type: application/json
   "mode": "rename"
 }
 
+### Sin mapeo de miembros de SP (desactivado)
+POST {{host}}{{urlBridge}}/sp-to-new-acc-project
+Content-Type: application/json
 
+{
+  "driveId": "{{SP_DRIVE_ID}}",
+  "itemId": "{{SP_ITEM_ID}}",
+  "hubId": "{{HUB_ID}}",
+  "mapSpMembers": true,
+  "mode": "upsert"
+}
 
 ################################################################################
 # COMPROBACION TEMPORAL DEL ACOUNT ADMIN AAA
