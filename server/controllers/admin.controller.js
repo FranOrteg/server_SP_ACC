@@ -5,6 +5,8 @@ const accAdmin = require('../services/admin.acc.service');
 const spAdmin = require('../services/admin.sp.service');
 const twinSvc = require('../services/admin.twin.service');
 const logger = require('../helpers/logger');
+const path = require('path');
+const fs = require('fs');
 const { graphGet } = require('../clients/graphClient');
 const { searchTenantUsers } = require('../services/admin.users.service');
 const { assignMembersToSite, removeMembersFromSite, getSiteMembers } = require('../services/admin.sp.service');
@@ -112,6 +114,19 @@ async function getTemplate(req, res, next) {
   } catch (e) { next(e); }
 }
 
+async function listTemplates(_req, res, next) {
+  try {
+    const dir = path.join(__dirname, '..', 'config', 'templates');
+    const files = await fs.promises.readdir(dir);
+    // Devolvemos solo IDs (nombre de archivo sin .json)
+    const items = files
+      .filter(f => f.endsWith('.json'))
+      .map(f => path.basename(f, '.json'))
+      .sort((a, b) => a.localeCompare(b));
+    res.json({ items });
+  } catch (e) { next(e); }
+
+}
 // ------------------------- Apply only: ACC -------------------------
 
 async function applyAcc(req, res, next) {
@@ -380,7 +395,7 @@ async function createTwin(req, res, next) {
       code, name,
       memberEmail,
       members = [],
-      accMembers = []     
+      accMembers = []
     } = req.body || {};
 
     if (!(hubId || accountId) || !templateId || !sp?.url) {
@@ -644,5 +659,6 @@ module.exports = {
   spListUsers,
   setSiteMembers,
   getCurrentSiteMembers,
-  listAccAccountUsers
+  listAccAccountUsers,
+  listTemplates
 };

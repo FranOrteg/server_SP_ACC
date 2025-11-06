@@ -8,6 +8,7 @@ const { spoAdminGet } = require('../../clients/spoClient');
 // Templates
 // -----------------------------------------------------------------------------
 router.get('/templates/:templateId', ctrl.getTemplate);
+router.get('/templates', ctrl.listTemplates);
 
 // -----------------------------------------------------------------------------
 // ACC (Autodesk Construction Cloud)
