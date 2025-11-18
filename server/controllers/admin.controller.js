@@ -264,7 +264,7 @@ async function createAccProject(req, res, next) {
       onNameConflict
     });
 
-    // --- NUEVO: normalizar y citar a todos los miembros (si se pasan)
+    // --- Normalizar y citar a todos los miembros (si se pasan)
     const normalized = normalizeAccMembersFromBody({ memberEmail, members, accMembers });
     let membership = null;
     if (normalized.length) {
@@ -276,7 +276,9 @@ async function createAccProject(req, res, next) {
             projectId: created.projectId,
             email: m.email,
             makeProjectAdmin: !!m.makeProjectAdmin,
-            grantDocs: (m.grantDocs || 'viewer')
+            grantDocs: (m.grantDocs || 'viewer'),
+            grantDesignCollab: 'admin',
+            grantModelCoord: 'admin'
           });
           membership.push(r);
         } catch (e) {

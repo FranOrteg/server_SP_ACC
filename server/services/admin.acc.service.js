@@ -23,7 +23,9 @@ function ensureB(id) {
 
 // ------------------ Activar Docs (best-effort) ------------------
 
-let DOCS_ACTIVATION_SUPPORTED; // undefined = desconocido, false = no existe en tenant, true = soportado
+let DOCS_ACTIVATION_SUPPORTED;
+let DESIGN_COLLABORATION_SUPPORTED;
+let MODEL_COORDINATION_SUPPORTED;
 
 async function activateDocs(projectAdminId) {
   const url = `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=doc_mgmt`;
@@ -46,6 +48,61 @@ async function activateDocs(projectAdminId) {
       return { ok: true, skipped: true, via: url };
     }
     log.warn('[activateDocs] continua (best-effort). Motivo:', s || e.message);
+    return { ok: true, skipped: true, via: url, status: s };
+  }
+}
+
+// ------------------ Activar Design Collaboration (best-effort) ------------------
+
+async function activateDesignCollaboration(projectAdminId) {
+  const url = `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=design_collaboration`;
+
+  if (DESIGN_COLLABORATION_SUPPORTED === false) {
+    log.debug('[activateDesignCollaboration] omitido (cache: no soportado en tenant)');
+    return { ok: true, skipped: true, via: null };
+  }
+
+  try {
+    await apsUser.apiPost(url, {});
+    DESIGN_COLLABORATION_SUPPORTED = true;
+    log.info('[activateDesignCollaboration] ok via', url);
+    return { ok: true, via: url };
+  } catch (e) {
+    const s = e?.response?.status;
+    if (s === 404) {
+      DESIGN_COLLABORATION_SUPPORTED = false;
+      log.info('[activateDesignCollaboration] no disponible en este tenant (404). No se volverá a intentar.');
+      return { ok: true, skipped: true, via: url };
+    }
+    log.warn('[activateDesignCollaboration] continua (best-effort). Motivo:', s || e.message);
+    return { ok: true, skipped: true, via: url, status: s };
+  }
+}
+
+
+// ------------------ Activar Model Coordination (best-effort) ------------------
+
+async function activateModelCoordination(projectAdminId) {
+  const url = `/construction/admin/v1/projects/${encodeURIComponent(projectAdminId)}/activate?service=model_coordination`;
+
+  if (MODEL_COORDINATION_SUPPORTED === false) {
+    log.debug('[activateModelCoordination] omitido (cache: no soportado en tenant)');
+    return { ok: true, skipped: true, via: null };
+  }
+
+  try {
+    await apsUser.apiPost(url, {});
+    MODEL_COORDINATION_SUPPORTED = true;
+    log.info('[activateModelCoordination] ok via', url);
+    return { ok: true, via: url };
+  } catch (e) {
+    const s = e?.response?.status;
+    if (s === 404) {
+      MODEL_COORDINATION_SUPPORTED = false;
+      log.info('[activateModelCoordination] no disponible en este tenant (404). No se volverá a intentar.');
+      return { ok: true, skipped: true, via: url };
+    }
+    log.warn('[activateModelCoordination] continua (best-effort). Motivo:', s || e.message);
     return { ok: true, skipped: true, via: url, status: s };
   }
 }
@@ -112,12 +169,18 @@ async function ensureProjectMember({
   projectId,
   email,
   makeProjectAdmin = true,
-  grantDocs = 'admin'
+  grantDocs = 'admin',
+  grantDesignCollab = 'admin',
+  grantModelCoord = 'admin'
 }) {
   if (!projectId || !email) throw new Error('ensureProjectMember: projectId y email son obligatorios');
 
   const products = [];
+
+  // Project Administration
   if (makeProjectAdmin) products.push({ key: 'projectAdministration', access: 'administrator' });
+
+  // Docs
   if (grantDocs) {
     const lvl = String(grantDocs).toLowerCase();
     let access = 'viewer';
@@ -126,6 +189,27 @@ async function ensureProjectMember({
     else access = 'viewer';
     products.push({ key: 'docs', access });
   }
+
+  // Design Collaboration
+  if (grantDesignCollab) {
+    const lvl = String(grantDesignCollab).toLowerCase();
+    let access = 'viewer';
+    if (lvl === 'admin') access = 'administrator';
+    else if (lvl === 'member') access = 'member';
+    else access = 'viewer';
+    products.push({ key: 'designCollaboration', access });
+  }
+
+  // Model Coordination
+  if (grantModelCoord) {
+    const lvl = String(grantModelCoord).toLowerCase();
+    let access = 'viewer';
+    if (lvl === 'admin') access = 'administrator';
+    else if (lvl === 'member') access = 'member';
+    else access = 'viewer';
+    products.push({ key: 'modelCoordination', access });
+  }
+
   const url = `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users`;
   try {
     await apsUser.apiPost(url, { email, products });
@@ -211,6 +295,20 @@ async function createProject({
         if (st === 404) log.debug('[activateDocs] endpoint no disponible en este tenant. Continuamos.');
         else log.debug('[activateDocs] best-effort, continuar. Motivo:', st || e.message);
       }
+
+      try { await activateDesignCollaboration(projectAdminId); } catch (e) {
+        const st = e?.response?.status;
+        if (st === 404) log.debug('[activateDesignCollaboration] endpoint no disponible en este tenant. Continuamos.');
+        else log.debug('[activateDesignCollaboration] best-effort, continuar. Motivo:', st || e.message);
+      }
+
+      try { await activateModelCoordination(projectAdminId); } catch (e) {
+        const st = e?.response?.status;
+        if (st === 404) log.debug('[activateModelCoordination] endpoint no disponible en este tenant. Continuamos.');
+        else log.debug('[activateModelCoordination] best-effort, continuar. Motivo:', st || e.message);
+      }
+
+      // Esperar aprovisionamiento en DM
 
       const hubIdDM = ensureB(accId);
       const projectIdDM = ensureB(projectAdminId);
