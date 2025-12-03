@@ -15,6 +15,45 @@
       },
       "createdAt": "2025-12-03T12:52:08.594Z",
       "updatedAt": "2025-12-03T12:52:08.594Z"
+    },
+    {
+      "twinId": "PRJ-AOBA01-test",
+      "acc": {
+        "projectId": "ef04296b-5db4-4cd6-be75-0d28484837cd"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,96681950-7b42-4d2f-81cd-6136dc57190a,fd44955b-65e3-41dd-b9aa-c08d73061a71"
+      },
+      "templateId": "labit-standard-ACC",
+      "vars": {},
+      "createdAt": "2025-12-03T14:21:54.338Z",
+      "updatedAt": "2025-12-03T14:21:54.338Z"
+    },
+    {
+      "twinId": "PRJ-AEMD01-test1000",
+      "acc": {
+        "projectId": "4716f3dc-8672-47a9-861a-f189b32f523c"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,c9629172-80a0-4b3d-bd20-e9c089710a52,fd44955b-65e3-41dd-b9aa-c08d73061a71"
+      },
+      "templateId": "labit-standard-SP",
+      "vars": {},
+      "createdAt": "2025-12-03T14:57:42.286Z",
+      "updatedAt": "2025-12-03T14:57:42.286Z"
+    },
+    {
+      "twinId": "PRJ-ISBC02-test",
+      "acc": {
+        "projectId": "8d9e8f1f-2eff-47cd-8d8d-7aa51cb17f57"
+      },
+      "sp": {
+        "siteId": "2dee8097-51dc-405f-9c52-b87d133b4c3f"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2025-12-03T16:16:58.979Z",
+      "updatedAt": "2025-12-03T16:16:58.979Z"
     }
   ]
 }

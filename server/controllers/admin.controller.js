@@ -182,37 +182,68 @@ async function applySp(req, res, next) {
 
 async function applyTwin(req, res, next) {
   try {
-    const { projectId, accountId, hubId, siteId, siteUrl, templateId, vars = {}, twinId } = req.body || {};
-    if (!projectId || !(siteId || siteUrl) || !templateId) {
-      return res.status(400).json({ error: 'projectId, siteId|siteUrl y templateId son obligatorios' });
+    const { 
+      projectId, accountId, hubId, siteId, siteUrl, 
+      templateId, vars = {}, twinId,
+      applyTemplates = false  // ⚠️ NUEVO: Por defecto solo vincula, no aplica plantillas
+    } = req.body || {};
+    
+    if (!projectId || !(siteId || siteUrl)) {
+      return res.status(400).json({ error: 'projectId y siteId|siteUrl son obligatorios' });
     }
-    const accId = normalizeAccountId(accountId || hubId);
-    if (!accId) {
-      return res.status(400).json({ error: 'accountId o hubId es obligatorio para aplicar en ACC (Docs)' });
+
+    // Si applyTemplates=true, requiere templateId
+    if (applyTemplates && !templateId) {
+      return res.status(400).json({ error: 'templateId es obligatorio cuando applyTemplates=true' });
     }
 
-    const { tpl, name } = await loadTemplateAndExpandName(templateId, vars);
+    let accRes = null, spRes = null, name = null;
 
-    const accRes = await accAdmin.applyTemplateToProject({
-      accountId: accId,
-      projectId,
-      template: tpl,
-      resolvedName: name
-    });
+    // Solo aplicar plantillas si se solicita explícitamente
+    if (applyTemplates && templateId) {
+      const accId = normalizeAccountId(accountId || hubId);
+      if (!accId) {
+        return res.status(400).json({ error: 'accountId o hubId es obligatorio para aplicar en ACC (Docs)' });
+      }
 
-    const spRes = await spAdmin.applyTemplateToSite({
-      siteId, siteUrl, template: tpl, resolvedName: name
-    });
+      const { tpl, name: resolvedName } = await loadTemplateAndExpandName(templateId, vars);
+      name = resolvedName;
 
+      accRes = await accAdmin.applyTemplateToProject({
+        accountId: accId,
+        projectId,
+        template: tpl,
+        resolvedName: name
+      });
+
+      spRes = await spAdmin.applyTemplateToSite({
+        siteId, siteUrl, template: tpl, resolvedName: name
+      });
+    }
+
+    // Obtener siteId si se pasó siteUrl
+    let finalSiteId = siteId;
+    if (!finalSiteId && siteUrl) {
+      const { data } = await graphGet(`/sites/${siteUrl}?$select=id`);
+      finalSiteId = data?.id;
+    }
+
+    // Guardar vínculo Twin
     const link = await twinSvc.saveLink({
-      twinId: twinId || `${projectId}__${spRes.siteId}`,
+      twinId: twinId || `${projectId}__${finalSiteId}`,
       projectId,
-      siteId: spRes.siteId,
-      templateId,
+      siteId: finalSiteId,
+      templateId: templateId || null,
       vars
     });
 
-    res.json({ ok: true, name, link, acc: accRes, sp: spRes });
+    res.json({ 
+      ok: true, 
+      link,
+      ...(name ? { name } : {}),
+      ...(accRes ? { acc: accRes } : {}),
+      ...(spRes ? { sp: spRes } : {})
+    });
   } catch (e) {
     const { status, detail } = mapError(e, 'apply_twin_failed');
     res.status(status).json({ error: { status, detail } });
