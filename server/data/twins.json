@@ -1,4 +1,20 @@
 {
   "list": [
+    {
+      "twinId": "PRJ-AOAM01-test",
+      "acc": {
+        "projectId": "a43d01c1-4fe6-4250-8e63-9ed03ebac6f7"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,aa6deef8-9e9f-4c00-a140-1132277cecaa,fd44955b-65e3-41dd-b9aa-c08d73061a71"
+      },
+      "templateId": "labit-standard-ACC",
+      "vars": {
+        "code": "AOAM01",
+        "name": "Test"
+      },
+      "createdAt": "2025-12-03T12:52:08.594Z",
+      "updatedAt": "2025-12-03T12:52:08.594Z"
+    }
   ]
 }

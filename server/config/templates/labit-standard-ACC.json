@@ -1,6 +1,6 @@
 {
     "templateId": "labit-bim-acc-structure-v1",
-    "namePattern": "PRJ-{code}-{name}",
+    "namePattern": "{TimeLabitCode}_{code}_{name}",
     "folders": [
         "03 PROJECT INFO",
         "03 PROJECT INFO/09 BIM",

@@ -1,6 +1,6 @@
 {
   "templateId": "labit-standard-v1",
-  "namePattern": "PRJ-{code}-{name}",
+  "namePattern": "{code}",
   "folders": [
     "1_COMMATOSO",
     "2_DESIGNERRRRRRRR/IFC",
