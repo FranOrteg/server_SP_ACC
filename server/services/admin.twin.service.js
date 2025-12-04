@@ -4,6 +4,7 @@ const path = require('path');
 const acc = require('./acc.service');
 const sp = require('./sharepoint.service');
 const { graphGet } = require('../clients/graphClient');
+const db = require('../config/mysql');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const FILE = path.join(DATA_DIR, 'twins.json');
@@ -13,22 +14,58 @@ function ensureStore() {
   if (!fs.existsSync(FILE)) fs.writeFileSync(FILE, JSON.stringify({ list: [] }, null, 2));
 }
 function load() { ensureStore(); return JSON.parse(fs.readFileSync(FILE, 'utf8')); }
-function save(db) { fs.writeFileSync(FILE, JSON.stringify(db, null, 2)); }
+function save(store) { fs.writeFileSync(FILE, JSON.stringify(store, null, 2)); }
 
-async function saveLink({ twinId, projectId, siteId, templateId, vars }) {
-  const db = load();
+async function saveLink({ twinId, projectId, siteId, templateId, vars, bim360Url }) {
+  const store = load();
   const now = new Date().toISOString();
-  const rec = { twinId, acc: { projectId }, sp: { siteId }, templateId, vars, createdAt: now, updatedAt: now };
-  const i = db.list.findIndex(x => x.twinId === twinId);
-  if (i >= 0) db.list[i] = { ...db.list[i], ...rec, updatedAt: now }; else db.list.push(rec);
-  save(db);
+  const computedUrl = bim360Url || `https://acc.autodesk.com/docs/files/projects/${projectId}`;
+  const rec = { 
+    twinId, 
+    acc: { 
+      projectId,
+      bim360Url: computedUrl
+    }, 
+    sp: { siteId }, 
+    templateId, 
+    vars, 
+    createdAt: now, 
+    updatedAt: now 
+  };
+  const i = store.list.findIndex(x => x.twinId === twinId);
+  if (i >= 0) store.list[i] = { ...store.list[i], ...rec, updatedAt: now }; else store.list.push(rec);
+  save(store);
   return rec;
 }
 
 async function getStatus(twinId) {
-  const db = load();
-  const tw = db.list.find(x => x.twinId === twinId);
+  const store = load();
+  const tw = store.list.find(x => x.twinId === twinId);
   if (!tw) return null;
+
+  // Intentar obtener URLs reales desde MySQL (Skylab DB)
+  let bim360UrlFromDB = null;
+  let webUrlFromDB = null;
+  
+  try {
+    // Extraer código del proyecto desde twinId (ej: "PRJ-FRMD01-test" -> "FRMD01")
+    const labitCode = twinId.replace(/^PRJ-/, '').replace(/-test.*$/, '').replace(/-.*$/, '');
+    
+    if (labitCode && db.query) {
+      const rows = await db.query(
+        'SELECT bim360Url, sharepointUrl FROM projects WHERE FolderLabitCode = ? LIMIT 1',
+        [labitCode]
+      );
+      
+      if (rows && rows.length > 0) {
+        bim360UrlFromDB = rows[0].bim360Url || null;
+        webUrlFromDB = rows[0].sharepointUrl || null;
+      }
+    }
+  } catch (e) {
+    // Silenciar errores de MySQL, usaremos URLs generadas como fallback
+    console.debug('[getStatus] MySQL lookup falló (usando fallback):', e.message);
+  }
 
   // ACC
   let accOk = false, accName = null, accErr = null;
@@ -53,20 +90,33 @@ async function getStatus(twinId) {
     spErr = e?.response?.status || e.message;
   }
 
+  // Prioridad de URLs: MySQL DB > Twin storage > Generated
+  const finalBim360Url = bim360UrlFromDB 
+    || tw.acc?.bim360Url 
+    || `https://acc.autodesk.com/docs/files/projects/${tw.acc.projectId}`;
+  
+  const finalWebUrl = webUrlFromDB || webUrl;
+
   const status = (accOk && spOk) ? 'green' : ((accOk || spOk) ? 'amber' : 'red');
   return {
     twinId,
     status,
-    acc: { ok: accOk, projectId: tw.acc.projectId, name: accName, error: accErr || null },
-    sp:  { ok: spOk, siteId: tw.sp.siteId, displayName: spName, webUrl, error: spErr || null },
+    acc: { 
+      ok: accOk, 
+      projectId: tw.acc.projectId, 
+      name: accName, 
+      bim360Url: finalBim360Url,
+      error: accErr || null 
+    },
+    sp:  { ok: spOk, siteId: tw.sp.siteId, displayName: spName, webUrl: finalWebUrl, error: spErr || null },
     templateId: tw.templateId || null,
     vars: tw.vars || {}
   };
 }
 
 async function listLinks() {
-  const db = load();
-  return { total: db.list.length, list: db.list };
+  const store = load();
+  return { total: store.list.length, list: store.list };
 }
 
 module.exports = { saveLink, getStatus, listLinks };

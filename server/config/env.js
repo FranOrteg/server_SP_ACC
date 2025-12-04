@@ -10,6 +10,13 @@ required([
   'APS_CLIENT_ID', 'APS_CLIENT_SECRET', 'APS_CALLBACK_URL'
 ]);
 
+// MySQL es opcional - si no está configurado, se usarán URLs generadas
+const mysqlOptional = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD'];
+const missingMySQL = mysqlOptional.filter(k => !process.env[k]);
+if (missingMySQL.length > 0 && missingMySQL.length < mysqlOptional.length) {
+  console.warn('⚠️ MySQL parcialmente configurado. Faltan:', missingMySQL.join(', '));
+}
+
 module.exports = {
   port: process.env.PORT || 3000,
   azure: {
@@ -21,5 +28,12 @@ module.exports = {
     clientId: process.env.APS_CLIENT_ID,
     clientSecret: process.env.APS_CLIENT_SECRET,
     callbackUrl: process.env.APS_CALLBACK_URL 
+  },
+  mysql: {
+    host: process.env.MYSQL_HOST,
+    port: process.env.MYSQL_PORT || 3306,
+    user: process.env.MYSQL_USER,
+    password: process.env.MYSQL_PASSWORD,
+    database: process.env.MYSQL_DATABASE || 'skylab'
   }
 };

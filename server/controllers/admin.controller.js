@@ -229,12 +229,14 @@ async function applyTwin(req, res, next) {
     }
 
     // Guardar vínculo Twin
+    const bim360Url = `https://acc.autodesk.com/docs/files/projects/${projectId}`;
     const link = await twinSvc.saveLink({
       twinId: twinId || `${projectId}__${finalSiteId}`,
       projectId,
       siteId: finalSiteId,
       templateId: templateId || null,
-      vars
+      vars,
+      bim360Url
     });
 
     res.json({ 
