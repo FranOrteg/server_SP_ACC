@@ -1,18 +1,5 @@
 {
   "list": [
-    {
-      "twinId": "PRJ-FRMD01-test",
-      "acc": {
-        "projectId": "3251654f-dd18-48dd-a992-9526ea7f9708",
-        "bim360Url": "https://acc.autodesk.com/docs/files/projects/3251654f-dd18-48dd-a992-9526ea7f9708"
-      },
-      "sp": {
-        "siteId": "02b61720-29db-4bd9-84d8-e5333f9d64e6"
-      },
-      "templateId": null,
-      "vars": {},
-      "createdAt": "2025-12-04T11:21:51.188Z",
-      "updatedAt": "2025-12-04T11:21:51.188Z"
-    }
+    
   ]
 }
