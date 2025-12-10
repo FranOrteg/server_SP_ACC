@@ -304,14 +304,15 @@ async function createAccProject(req, res, next) {
       membership = [];
       for (const m of normalized) {
         try {
+          const accessLevel = m.grantDocs || 'viewer';
           const r = await accAdmin.ensureProjectMember({
             accountId: created.accountId,
             projectId: created.projectId,
             email: m.email,
             makeProjectAdmin: !!m.makeProjectAdmin,
-            grantDocs: (m.grantDocs || 'viewer'),
-            grantDesignCollab: 'admin',
-            grantModelCoord: 'admin'
+            grantDocs: accessLevel,
+            grantDesignCollab: accessLevel,
+            grantModelCoord: accessLevel
           });
           membership.push(r);
         } catch (e) {
