@@ -1,18 +1,5 @@
 {
   "list": [
-    {
-      "twinId": "PRJ-DBCU01-test",
-      "acc": {
-        "projectId": "7a4bffce-3567-4a0f-8c77-3b92ca87d2dd",
-        "bim360Url": "https://acc.autodesk.com/docs/files/projects/7a4bffce-3567-4a0f-8c77-3b92ca87d2dd"
-      },
-      "sp": {
-        "siteId": "acb324d0-78ff-46c2-91ed-2ace107a8fe1"
-      },
-      "templateId": null,
-      "vars": {},
-      "createdAt": "2025-12-10T10:07:50.469Z",
-      "updatedAt": "2025-12-10T10:07:50.469Z"
-    }
+ 
   ]
 }
