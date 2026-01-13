@@ -38,6 +38,51 @@
 GET {{host}}{{urlHealth}}
 
 ################################################################################
+# SLACK INTEGRATION - Ejemplos de uso
+################################################################################
+
+### Crear Twin con canal de Slack automático
+POST {{host}}{{urlAdmin}}/twin/create
+Content-Type: application/json
+
+{
+  "hubId": "{{HUB_ID}}",
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { 
+    "code": "{{CODE}}", 
+    "name": "{{NAME}}" 
+  },
+  "sp": {
+    "url": "https://{{SPO_TENANT_HOST}}/sites/PRJ-{{CODE}}-{{NAME}}",
+    "type": "CommunicationSite",
+    "description": "Sitio del proyecto PRJ-{{CODE}}-{{NAME}}"
+  },
+  "members": [
+    { "user": "usuario1@empresa.com", "role": "Owner" },
+    { "user": "usuario2@empresa.com", "role": "Member" },
+    { "user": "usuario3@empresa.com", "role": "Visitor" }
+  ]
+}
+
+### Crear proyecto ACC con canal de Slack automático
+POST {{host}}{{urlAdmin}}/acc/projects/create
+Content-Type: application/json
+
+{
+  "hubId": "{{HUB_ID}}",
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { 
+    "code": "{{CODE}}", 
+    "name": "{{NAME}}" 
+  },
+  "accMembers": [
+    { "email": "usuario1@empresa.com", "makeProjectAdmin": true, "grantDocs": "admin" },
+    { "email": "usuario2@empresa.com", "makeProjectAdmin": false, "grantDocs": "member" },
+    { "email": "usuario3@empresa.com", "makeProjectAdmin": false, "grantDocs": "viewer" }
+  ]
+}
+
+################################################################################
 # SHAREPOINT (descubrimiento rápido)
 ################################################################################
 

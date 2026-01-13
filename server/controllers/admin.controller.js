@@ -4,6 +4,7 @@ const templates = require('../services/admin.template.service');
 const accAdmin = require('../services/admin.acc.service');
 const spAdmin = require('../services/admin.sp.service');
 const twinSvc = require('../services/admin.twin.service');
+const slackSvc = require('../services/slack.service');
 const logger = require('../helpers/logger');
 const path = require('path');
 const fs = require('fs');
@@ -331,6 +332,49 @@ async function createAccProject(req, res, next) {
       resolvedName
     });
 
+    // === SLACK: crear canal de proyecto e invitar miembros
+    let slackChannel = null;
+    try {
+      // Recopilar emails de todos los miembros
+      const memberEmails = new Set();
+      if (normalized?.length) {
+        normalized.forEach(m => m.email && memberEmails.add(m.email));
+      }
+
+      // Crear canal de Slack
+      slackChannel = await slackSvc.createProjectChannel({
+        projectName: resolvedName,
+        projectCode: code || vars.code,
+        description: `Canal del proyecto ${resolvedName}`,
+        memberEmails: Array.from(memberEmails),
+        isPrivate: false
+      });
+
+      if (slackChannel.ok) {
+        logger.mk('ACC-CTRL').info('Canal de Slack creado', {
+          projectId: created.projectId,
+          channelId: slackChannel.channel?.id,
+          channelName: slackChannel.channel?.name,
+          membersInvited: slackChannel.members?.invited
+        });
+      } else if (!slackChannel.skipped) {
+        logger.mk('ACC-CTRL').warn('No se pudo crear el canal de Slack', {
+          projectId: created.projectId,
+          error: slackChannel.error
+        });
+      }
+    } catch (slackError) {
+      // El error en Slack no debe impedir la creación del proyecto
+      logger.mk('ACC-CTRL').error('Error creando canal de Slack (no crítico)', {
+        projectId: created.projectId,
+        error: slackError.message
+      });
+      slackChannel = {
+        ok: false,
+        error: slackError.message
+      };
+    }
+
     res.json({
       ok: true,
       hubId: hubId || `b.${created.accountId}`,
@@ -339,7 +383,8 @@ async function createAccProject(req, res, next) {
       projectIdDM: created.dm?.projectIdDM,
       name: created.name,
       ...(membership ? { membership } : {}),
-      applied
+      applied,
+      ...(slackChannel ? { slack: slackChannel } : {})
     });
   } catch (e) {
     const { status, detail } = mapError(e, 'create_acc_project_failed');
@@ -544,6 +589,53 @@ async function createTwin(req, res, next) {
       twinId: link.twinId, projectId: accCreated.projectId, siteId: spCreated.siteId
     });
 
+    // === SLACK: crear canal de proyecto e invitar miembros
+    let slackChannel = null;
+    try {
+      // Recopilar emails de todos los miembros (ACC + SP)
+      const memberEmails = new Set();
+      
+      // Agregar miembros de ACC
+      if (normalizedAcc?.length) {
+        normalizedAcc.forEach(m => m.email && memberEmails.add(m.email));
+      }
+      
+      // Agregar miembros de SP
+      if (Array.isArray(members) && members.length) {
+        members.forEach(m => m.user && memberEmails.add(m.user));
+      }
+
+      // Crear canal de Slack
+      slackChannel = await slackSvc.createProjectChannel({
+        projectName: resolvedName,
+        projectCode: code || vars.code,
+        description: `Canal del proyecto ${resolvedName}`,
+        memberEmails: Array.from(memberEmails),
+        isPrivate: false
+      });
+
+      if (slackChannel.ok) {
+        logger.mk('TWIN-CTRL').info('Canal de Slack creado', {
+          channelId: slackChannel.channel?.id,
+          channelName: slackChannel.channel?.name,
+          membersInvited: slackChannel.members?.invited
+        });
+      } else if (!slackChannel.skipped) {
+        logger.mk('TWIN-CTRL').warn('No se pudo crear el canal de Slack', {
+          error: slackChannel.error
+        });
+      }
+    } catch (slackError) {
+      // El error en Slack no debe impedir la creación del Twin
+      logger.mk('TWIN-CTRL').error('Error creando canal de Slack (no crítico)', {
+        error: slackError.message
+      });
+      slackChannel = {
+        ok: false,
+        error: slackError.message
+      };
+    }
+
     // Respuesta
     res.json({
       ok: true,
@@ -559,7 +651,8 @@ async function createTwin(req, res, next) {
         ...spCreated,
         applied: spApplied,
         ...(spMembership ? { membership: spMembership } : {})
-      }
+      },
+      ...(slackChannel ? { slack: slackChannel } : {})
     });
   } catch (e) {
     const { status, detail } = mapError(e, 'create_twin_failed');

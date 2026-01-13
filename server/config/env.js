@@ -17,6 +17,11 @@ if (missingMySQL.length > 0 && missingMySQL.length < mysqlOptional.length) {
   console.warn('⚠️ MySQL parcialmente configurado. Faltan:', missingMySQL.join(', '));
 }
 
+// Slack es opcional - si no está configurado, se omitirá la creación de canales
+if (!process.env.SLACK_BOT_TOKEN) {
+  console.warn('⚠️ SLACK_BOT_TOKEN no configurado. Los canales de Slack no se crearán automáticamente.');
+}
+
 module.exports = {
   port: process.env.PORT || 3000,
   azure: {
@@ -35,5 +40,8 @@ module.exports = {
     user: process.env.MYSQL_USER,
     password: process.env.MYSQL_PASSWORD,
     database: process.env.MYSQL_DATABASE || 'skylab'
+  },
+  slack: {
+    botToken: process.env.SLACK_BOT_TOKEN
   }
 };
