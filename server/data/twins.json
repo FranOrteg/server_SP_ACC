@@ -1,18 +1,5 @@
 {
   "list": [
-    {
-      "twinId": "PRJ-AHBC01-test2026-7",
-      "acc": {
-        "projectId": "b8d72bd3-d7c0-4157-a008-c819b65213f1",
-        "bim360Url": "https://acc.autodesk.com/docs/files/projects/b8d72bd3-d7c0-4157-a008-c819b65213f1"
-      },
-      "sp": {
-        "siteId": "e229d079-0659-49ee-8937-477eabf23195"
-      },
-      "templateId": null,
-      "vars": {},
-      "createdAt": "2026-01-13T11:52:43.905Z",
-      "updatedAt": "2026-01-13T11:52:43.905Z"
-    }
+    
   ]
 }

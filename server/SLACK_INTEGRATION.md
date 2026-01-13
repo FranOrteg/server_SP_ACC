@@ -9,6 +9,7 @@ Durante el proceso de creación de proyectos (SP + ACC + Skylab), el sistema aho
 ✅ **Creación automática de canales** durante:
 - Creación de proyectos Twin (ACC + SP)
 - Creación de proyectos solo ACC
+- Creación de sitios SharePoint
 
 ✅ **Gestión automática de miembros**:
 - Invitación automática de todos los miembros del proyecto
@@ -108,9 +109,33 @@ Content-Type: application/json
     "code": "PROJ01", 
     "name": "Mi Proyecto" 
   },
+  "createSlackChannel": true,
   "accMembers": [
     { "email": "usuario1@empresa.com", "makeProjectAdmin": true, "grantDocs": "admin" },
     { "email": "usuario2@empresa.com", "makeProjectAdmin": false, "grantDocs": "member" }
+  ]
+}
+```
+
+### Crear Sitio SharePoint
+Los endpoints que soportan Slack (`/api/admin/twin/create`, `/api/admin/acc/projects/create`, `/api/admin/sp/sites/create`) ahora incluyen información del canal de Slack creado cuando `createSlackChannel: true`
+```http
+POST /api/admin/sp/sites/create
+Content-Type: application/json
+
+{
+  "templateId": "labit-standard-SP",
+  "vars": { 
+    "code": "PROJ01", 
+    "name": "Mi Proyecto" 
+  },
+  "type": "CommunicationSite",
+  "url": "https://tenant.sharepoint.com/sites/PROJ01",
+  "description": "Sitio del proyecto",
+  "createSlackChannel": true,
+  "members": [
+    { "user": "usuario1@empresa.com", "role": "Owner" },
+    { "user": "usuario2@empresa.com", "role": "Member" }
   ]
 }
 ```
@@ -167,6 +192,26 @@ Ambos endpoints ahora incluyen información del canal de Slack creado:
 ```
 
 ## Comportamiento del Sistema
+
+### Control de Creación de Canales
+
+La creación del canal de Slack se controla mediante el parámetro `createSlackChannel` en el request body:
+
+#### Endpoints que soportan el parámetro:
+
+1. **`POST /api/admin/acc/projects/create`** (Proyectos ACC)
+   - `createSlackChannel: true` → Crea canal con miembros de `accMembers[]`
+   - `createSlackChannel: false` o no incluido → No crea canal
+
+2. **`POST /api/admin/sp/sites/create`** (Sitios SharePoint)
+   - `createSlackChannel: true` → Crea canal con miembros de `members[]`
+   - `createSlackChannel: false` o no incluido → No crea canal
+
+3. **`POST /api/admin/twin/create`** (Proyectos Twin)
+   - **Siempre crea canal automáticamente** si hay miembros (comportamiento por defecto)
+   - Combina miembros de `accMembers[]` y `members[]`
+
+**Nota**: En el endpoint Twin, la creación es automática para mantener la consistencia entre ACC, SP y Slack como un único ecosistema integrado.
 
 ### Nombres de Canales
 
@@ -294,3 +339,37 @@ echo "SLACK_BOT_TOKEN=xoxb-tu-token" >> .env
 - [Slack API Documentation](https://api.slack.com/)
 - [Slack Bot Tokens](https://api.slack.com/authentication/token-types)
 - [OAuth Scopes](https://api.slack.com/scopes)
+
+---
+
+## Tabla Comparativa de Endpoints
+
+| Endpoint | Parámetro Control | Fuente de Miembros | Comportamiento |
+|----------|-------------------|-------------------|----------------|
+| `/api/admin/twin/create` | N/A (automático) | `members[]` + `accMembers[]` | Siempre crea canal si hay miembros |
+| `/api/admin/acc/projects/create` | `createSlackChannel` | `accMembers[]` o `members[]` | Crea canal solo si `true` |
+| `/api/admin/sp/sites/create` | `createSlackChannel` | `members[]` | Crea canal solo si `true` |
+
+### Formato de Miembros por Endpoint:
+
+**ACC (`accMembers`):**
+```json
+[
+  { "email": "user@example.com", "makeProjectAdmin": true, "grantDocs": "admin" }
+]
+```
+
+**SharePoint (`members`):**
+```json
+[
+  { "user": "user@example.com", "role": "Owner" }
+]
+```
+
+**Twin (ambos formatos soportados):**
+```json
+{
+  "members": [{ "user": "user@example.com", "role": "Owner" }],
+  "accMembers": [{ "email": "user@example.com", "makeProjectAdmin": true, "grantDocs": "admin" }]
+}
+```

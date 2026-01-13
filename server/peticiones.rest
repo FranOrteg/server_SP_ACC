@@ -75,10 +75,32 @@ Content-Type: application/json
     "code": "{{CODE}}", 
     "name": "{{NAME}}" 
   },
+  "createSlackChannel": true,
   "accMembers": [
     { "email": "usuario1@empresa.com", "makeProjectAdmin": true, "grantDocs": "admin" },
     { "email": "usuario2@empresa.com", "makeProjectAdmin": false, "grantDocs": "member" },
     { "email": "usuario3@empresa.com", "makeProjectAdmin": false, "grantDocs": "viewer" }
+  ]
+}
+
+### Crear sitio SharePoint con canal de Slack automático
+POST {{host}}{{urlAdmin}}/sp/sites/create
+Content-Type: application/json
+
+{
+  "templateId": "{{TEMPLATE_ID}}",
+  "vars": { 
+    "code": "{{CODE}}", 
+    "name": "{{NAME}}" 
+  },
+  "type": "CommunicationSite",
+  "url": "https://{{SPO_TENANT_HOST}}/sites/{{CODE}}",
+  "description": "Sitio del proyecto {{CODE}}",
+  "createSlackChannel": true,
+  "members": [
+    { "user": "usuario1@empresa.com", "role": "Owner" },
+    { "user": "usuario2@empresa.com", "role": "Member" },
+    { "user": "usuario3@empresa.com", "role": "Visitor" }
   ]
 }
 
