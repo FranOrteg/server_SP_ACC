@@ -111,4 +111,12 @@ router.get('/twin/:id/status', ctrl.twinStatus);
 // Listar vínculos guardados
 router.get('/twin', ctrl.listTwins);
 
+// -----------------------------------------------------------------------------
+// Slack
+// -----------------------------------------------------------------------------
+
+// Archivar canal de Slack (para cuando se cierra/inactiva un proyecto)
+router.post('/slack/channels/archive', ctrl.archiveSlackChannel);
+
+
 module.exports = router;

@@ -309,6 +309,28 @@ async function createProjectChannel({
 }
 
 /**
+ *  Elimina el canal de Slack por ID (opcional)
+ * @param {string} channelId - ID del canal a eliminar
+ */ 
+
+async function deleteChannel(channelId) {
+  if (!channelId) {
+    throw new Error('El ID del canal es obligatorio para eliminarlo');
+  }
+
+  try {
+    await slackClient.apiPost('/conversations.archive', {
+      channel: channelId
+    });
+    log.info('Canal de Slack archivado exitosamente', { channelId });
+  } catch (e) {
+    log.error('Error al archivar el canal de Slack', { channelId, error: e.message });
+    throw e;
+  }
+}
+
+
+/**
  * Verifica si Slack está configurado correctamente
  */
 function isSlackConfigured() {
@@ -321,5 +343,6 @@ module.exports = {
   createProjectChannel,
   findUserByEmail,
   normalizeChannelName,
-  isSlackConfigured
+  isSlackConfigured,
+  deleteChannel
 };

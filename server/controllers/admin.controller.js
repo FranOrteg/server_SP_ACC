@@ -823,6 +823,40 @@ async function listAccAccountUsers(req, res) {
 }
 
 
+
+// ------------------------- Slack -------------------------
+
+async function archiveSlackChannel(req, res, next) {
+  try {
+    const { channelId, channelUrl } = req.body;
+    
+    let idToArchive = channelId;
+
+    // Try to extract from URL if channelId is not provided but URL is
+    // Example: https://labitgroup.slack.com/archives/C09JSMGASNM
+    if (!idToArchive && channelUrl) {
+      // Remove trailing slash if present
+      const cleanUrl = channelUrl.endsWith('/') ? channelUrl.slice(0, -1) : channelUrl;
+      const parts = cleanUrl.split('/');
+      idToArchive = parts[parts.length - 1];
+    }
+
+    if (!idToArchive) {
+       return res.status(400).json({ error: 'channelId or channelUrl is required' });
+    }
+
+    // Call service to archive
+    await slackSvc.deleteChannel(idToArchive);
+
+    logger.mk('ADMIN-CTRL').info('Canal de Slack archivado', { channelId: idToArchive });
+    
+    res.json({ ok: true, channelId: idToArchive });
+  } catch (e) {
+    const { status, detail } = mapError(e, 'archive_slack_channel_failed');
+    res.status(status || 500).json({ error: { status, detail } });
+  }
+}
+
 module.exports = {
   getTemplate,
   applyAcc,
@@ -839,5 +873,7 @@ module.exports = {
   setSiteMembers,
   getCurrentSiteMembers,
   listAccAccountUsers,
-  listTemplates
+  listTemplates,
+  archiveSlackChannel
 };
+
