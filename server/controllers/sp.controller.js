@@ -107,6 +107,18 @@ async function searchUsers(req, res, next) {
   } catch (e) { next(e); }
 }
 
+async function deleteSite(req, res, next) {
+  try {
+    const { siteId } = req.query;
+    if (!siteId) return res.status(400).json({ error: 'siteId requerido' });
+    const result = await sp.deleteSite(siteId);
+    res.json({ result });
+
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   resolveSite,
   listDrives,
@@ -117,5 +129,6 @@ module.exports = {
   listAllSites,
   listDrivesByUrl,
   itemByPath,
-  searchUsers
+  searchUsers,
+  deleteSite
 };

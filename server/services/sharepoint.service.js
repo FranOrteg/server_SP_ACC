@@ -3,7 +3,7 @@ const { graphGet, graphGetStream, graphPost } = require('../clients/graphClient'
 const { pipeline } = require('node:stream/promises');
 const fs = require('fs');
 const path = require('path');
-const { spoAdminGet } = require('../clients/spoClient');
+const { spoAdminGet, deleteSpSite } = require('../clients/spoClient');
 
 // util local
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -595,6 +595,12 @@ async function createUploadSession(driveId, parentItemIdOrRoot, fileName) {
   return data.uploadUrl;
 }
 
+/* Elimina el sitio */
+async function deleteSite(siteId) {
+  const { data } = await deleteSpSite(siteId);
+  return data;
+}
+
 module.exports = {
   // resolución flexible
   resolveSiteIdFlexible,
@@ -623,4 +629,7 @@ module.exports = {
   createUploadSession,
 
   searchSpUsers,
+
+  // eliminación
+  deleteSite
 };

@@ -150,8 +150,33 @@ async function spoAdminPatch(path, data, extraHeaders = {}) {
   });
 }
 
+/** 
+  * Elimina un sitio de SharePoint dado su siteId
+  */
+async function deleteSpSite(siteId) {
+  return withRetry(async () => {
+    const token = await getSharePointToken();
+    return axios.delete(`https://${SPO_ADMIN_HOST}/_api/SPSiteManager/delete`, {
+      timeout: 30000, // 30s para operaciones de eliminación
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json;odata.metadata=none',
+        'Content-Type': 'application/json',
+        'OData-Version': '4.0'
+      },
+      data: {
+        siteId: siteId
+      }
+    });
+  }, {
+    maxRetries: 2,
+    baseDelay: 3000
+  });
+}
+
 module.exports = {
   spoAdminPost,
   spoAdminGet,
-  spoAdminPatch
+  spoAdminPatch,
+  deleteSpSite
 };
