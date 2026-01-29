@@ -1,5 +1,5 @@
 // services/sharepoint.service.js
-const { graphGet, graphGetStream, graphPost } = require('../clients/graphClient');
+const { graphGet, graphGetStream, graphPost, graphDelete } = require('../clients/graphClient');
 const { pipeline } = require('node:stream/promises');
 const fs = require('fs');
 const path = require('path');
@@ -595,10 +595,165 @@ async function createUploadSession(driveId, parentItemIdOrRoot, fileName) {
   return data.uploadUrl;
 }
 
-/* Elimina el sitio */
+/**
+ * Elimina un sitio de SharePoint
+ * - Si está vinculado a un grupo M365: elimina el grupo usando Graph API
+ * - Si es Communication Site: usa SPSiteManager/delete
+ * @param {string} siteId - UUID del sitio a eliminar
+ * @returns {Promise<Object>} Resultado de la operación
+ */
 async function deleteSite(siteId) {
-  const { data } = await deleteSpSite(siteId);
-  return data;
+  try {
+    console.log('[SP-SVC] Iniciando eliminación de sitio:', siteId);
+    
+    let siteInfo = null;
+    let groupId = null;
+    
+    try {
+      // Estrategia 1: Intentar acceso directo con el siteId (funciona para sitios recién creados)
+      console.log('[SP-SVC] Intentando obtener información del sitio...');
+      try {
+        const { data } = await graphGet(`/sites/${siteId}?$select=id,displayName,webUrl,sharepointIds`);
+        siteInfo = data;
+        console.log('[SP-SVC] Sitio encontrado (acceso directo):', siteInfo.displayName);
+      } catch (directErr) {
+        // Estrategia 2: Si falla el acceso directo, intentar con hostname:path  
+        // Necesitamos construir la ruta. Como no tenemos el displayName, usaremos el tenant host
+        console.log('[SP-SVC] Acceso directo falló, intentando con hostname...');
+        const SPO_TENANT_HOST = process.env.SPO_TENANT_HOST;
+        if (!SPO_TENANT_HOST) throw new Error('SPO_TENANT_HOST no configurado');
+        
+        // Para sitios restaurados, necesitamos buscarlos primero
+        // La búsqueda de Graph API busca en el índice de SharePoint
+        console.log('[SP-SVC] Buscando sitio en el índice de SharePoint...');
+        const { data: searchData } = await graphGet(`/sites?search=${siteId}&$select=id,displayName,webUrl`);
+        
+        if (!searchData.value || searchData.value.length === 0) {
+          // Última estrategia: usar SPO Admin API para obtener info del sitio
+          console.log('[SP-SVC] Sitio no encontrado en Graph, intentando con SPO Admin API...');
+          try {
+            const spoInfo = await spoAdminGet(`/_api/SPSiteManager/status?url=https://${SPO_TENANT_HOST}/sites/${siteId}`);
+            if (spoInfo && spoInfo.data) {
+              siteInfo = {
+                id: siteId,
+                displayName: siteId,
+                webUrl: `https://${SPO_TENANT_HOST}/sites/${siteId}`
+              };
+              console.log('[SP-SVC] Info obtenida desde SPO Admin API');
+            }
+          } catch (spoErr) {
+            console.error('[SP-SVC] Error en SPO Admin API:', spoErr.message);
+          }
+        } else {
+          siteInfo = searchData.value[0];
+          console.log('[SP-SVC] Sitio encontrado en búsqueda:', siteInfo.displayName);
+        }
+        
+        if (!siteInfo) {
+          const error = new Error('Sitio no encontrado. Es posible que ya haya sido eliminado.');
+          error.statusCode = 404;
+          throw error;
+        }
+      }
+      
+      // 2. Extraer el mailNickname de la URL del sitio
+      const siteUrl = siteInfo.webUrl || '';
+      const urlParts = siteUrl.split('/');
+      const mailNickname = urlParts[urlParts.length - 1]; // Ej: "LBAN0X"
+      
+      // 3. Buscar el grupo M365 asociado
+      console.log('[SP-SVC] Buscando grupo M365 con mailNickname:', mailNickname);
+      
+      try {
+        const { data: groupsData } = await graphGet(
+          `/groups?$filter=mailNickname eq '${mailNickname}'&$select=id,displayName,mailNickname`
+        );
+        
+        if (groupsData.value && groupsData.value.length > 0) {
+          groupId = groupsData.value[0].id;
+          console.log('[SP-SVC] Grupo M365 encontrado:', groupId);
+        } else {
+          console.log('[SP-SVC] No se encontró grupo M365. Es un Communication Site.');
+        }
+      } catch (groupErr) {
+        console.warn('[SP-SVC] Error al buscar grupo M365:', groupErr.message);
+      }
+      
+    } catch (err) {
+      // Si es 404, el sitio no existe
+      if (err.response?.status === 404 || err.statusCode === 404) {
+        console.error('[SP-SVC] Sitio no encontrado:', siteId);
+        const error = new Error('Sitio no encontrado. Es posible que ya haya sido eliminado.');
+        error.statusCode = 404;
+        throw error;
+      }
+      // Para otros errores, continuar con eliminación normal
+      console.warn('[SP-SVC] Error al buscar información del sitio:', err.message);
+    }
+    
+    if (groupId) {
+      // Es un sitio de grupo - eliminar el grupo M365 (lo cual elimina el sitio)
+      console.log('[SP-SVC] Sitio vinculado a grupo M365. GroupId:', groupId);
+      console.log('[SP-SVC] Eliminando grupo M365 (esto eliminará también el sitio)...');
+      
+      const response = await graphDelete(`/groups/${groupId}`, { timeout: 60000 });
+      
+      console.log('[SP-SVC] Grupo M365 (y sitio) eliminado correctamente');
+      return {
+        success: true,
+        siteId,
+        groupId,
+        type: 'group-connected',
+        deletedAt: new Date().toISOString(),
+        message: 'Sitio de grupo eliminado. El sitio y el grupo irán a la papelera de reciclaje.'
+      };
+      
+    } else {
+      // Es un Communication Site o Team Site sin grupo - usar SPSiteManager/delete
+      console.log('[SP-SVC] Sitio NO vinculado a grupo. Usando SPSiteManager/delete...');
+      
+      const response = await deleteSpSite(siteId);
+      
+      // Verificar respuesta exitosa
+      if (response.status === 200 || response.status === 204) {
+        console.log('[SP-SVC] Sitio eliminado correctamente:', siteId);
+        return {
+          success: true,
+          siteId,
+          type: 'communication-site',
+          deletedAt: new Date().toISOString(),
+          message: 'Sitio eliminado correctamente. Irá a la papelera de reciclaje de SharePoint por 93 días.'
+        };
+      }
+      
+      // Si el status no es exitoso, extraer mensaje de error de SharePoint
+      const errorData = response.data?.['odata.error'] || response.data?.error || response.data;
+      const errorMessage = errorData?.message?.value || errorData?.message || 'Error desconocido';
+      
+      const error = new Error(errorMessage);
+      error.statusCode = response.status;
+      error.response = response;
+      throw error;
+    }
+    
+  } catch (error) {
+    // Extraer mensaje de error si está disponible
+    const errorData = error.response?.data?.['odata.error'] || error.response?.data?.error || error.response?.data;
+    const spErrorMessage = errorData?.message?.value || errorData?.message || error.message;
+    
+    console.error('[SP-SVC] Error al eliminar sitio:', {
+      siteId,
+      error: spErrorMessage,
+      status: error.response?.status,
+      data: errorData
+    });
+    
+    // Propagar el error con información completa
+    const err = new Error(spErrorMessage);
+    err.statusCode = error.response?.status || error.statusCode;
+    err.response = error.response;
+    throw err;
+  }
 }
 
 module.exports = {

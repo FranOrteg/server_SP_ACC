@@ -81,7 +81,10 @@ router.post('/sp/sites/apply', ctrl.applySp);
 
 // Gestión de miembros del sitio 
 router.get('/sp/sites/members', ctrl.getCurrentSiteMembers);
-router.post('/sp/sites/members', ctrl.setSiteMembers);       
+router.post('/sp/sites/members', ctrl.setSiteMembers);
+
+// Eliminación de sitios
+router.delete('/sp/sites/delete', ctrl.deleteSite);       
 
 router.get('/sp/diag/tenant', async (req, res, next) => {
   try {

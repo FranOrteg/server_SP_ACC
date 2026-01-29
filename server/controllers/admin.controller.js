@@ -5,6 +5,7 @@ const accAdmin = require('../services/admin.acc.service');
 const spAdmin = require('../services/admin.sp.service');
 const twinSvc = require('../services/admin.twin.service');
 const slackSvc = require('../services/slack.service');
+const spService = require('../services/sharepoint.service');
 const logger = require('../helpers/logger');
 const path = require('path');
 const fs = require('fs');
@@ -857,6 +858,91 @@ async function archiveSlackChannel(req, res, next) {
   }
 }
 
+/**
+ * Elimina un sitio de SharePoint de forma permanente
+ * @route DELETE /api/admin/sp/sites/delete
+ * @queryparam {string} siteId - UUID del sitio a eliminar
+ */
+async function deleteSite(req, res) {
+  try {
+    const { siteId } = req.query;
+    
+    logger.mk('ADMIN-CTRL').info('🗑️ Solicitud de eliminación de sitio:', {
+      siteId,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Validación
+    if (!siteId) {
+      logger.mk('ADMIN-CTRL').warn('⚠️ Solicitud sin siteId');
+      return res.status(400).json({ 
+        error: 'siteId es requerido' 
+      });
+    }
+
+    // Validar formato de UUID
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(siteId)) {
+      logger.mk('ADMIN-CTRL').warn('⚠️ Formato de siteId inválido:', siteId);
+      return res.status(400).json({ 
+        error: 'Formato de siteId inválido. Debe ser un UUID.' 
+      });
+    }
+
+    // Llamar al servicio de SharePoint
+    const result = await spService.deleteSite(siteId);
+    
+    logger.mk('ADMIN-CTRL').info('✅ Sitio eliminado correctamente:', {
+      siteId,
+      type: result.type,
+      groupId: result.groupId,
+      result
+    });
+    
+    return res.status(200).json({
+      ok: true,
+      deleted: {
+        siteId,
+        deletedAt: result.deletedAt || new Date().toISOString(),
+        type: result.type,
+        groupId: result.groupId
+      },
+      message: result.message || 'Sitio eliminado correctamente. Irá a la papelera de reciclaje de SharePoint por 93 días.'
+    });
+    
+  } catch (error) {
+    logger.mk('ADMIN-CTRL').error('❌ Error al eliminar sitio:', {
+      siteId: req.query.siteId,
+      error: error.message,
+      stack: error.stack,
+      response: error.response?.data
+    });
+    
+    // Manejar errores específicos de SharePoint
+    if (error.statusCode === 404 || error.response?.status === 404) {
+      return res.status(404).json({ 
+        error: 'Sitio no encontrado en SharePoint' 
+      });
+    }
+    
+    if (error.statusCode === 403 || error.response?.status === 403) {
+      return res.status(403).json({ 
+        error: 'No tienes permisos para eliminar este sitio' 
+      });
+    }
+
+    if (error.statusCode === 429 || error.response?.status === 429) {
+      return res.status(429).json({ 
+        error: 'Demasiadas solicitudes. Intenta de nuevo en unos momentos.' 
+      });
+    }
+    
+    return res.status(500).json({ 
+      error: `Error al eliminar sitio: ${error.message}` 
+    });
+  }
+}
+
 module.exports = {
   getTemplate,
   applyAcc,
@@ -874,6 +960,7 @@ module.exports = {
   getCurrentSiteMembers,
   listAccAccountUsers,
   listTemplates,
-  archiveSlackChannel
+  archiveSlackChannel,
+  deleteSite
 };
 

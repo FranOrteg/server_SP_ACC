@@ -151,22 +151,30 @@ async function spoAdminPatch(path, data, extraHeaders = {}) {
 }
 
 /** 
-  * Elimina un sitio de SharePoint dado su siteId
+  * Elimina un sitio de SharePoint dado su siteId (GUID)
+  * Usa POST /_api/SPSiteManager/delete según la documentación oficial
+  * @param {string} siteId - UUID del sitio a eliminar
+  * @returns {Promise<Object>} Respuesta de SharePoint
   */
 async function deleteSpSite(siteId) {
   return withRetry(async () => {
     const token = await getSharePointToken();
-    return axios.delete(`https://${SPO_ADMIN_HOST}/_api/SPSiteManager/delete`, {
-      timeout: 30000, // 30s para operaciones de eliminación
+    
+    console.log('[SPO] Eliminando sitio:', siteId);
+    
+    return axios({
+      method: 'POST',
+      url: `https://${SPO_ADMIN_HOST}/_api/SPSiteManager/delete`,
+      timeout: 30000,
       headers: {
         Authorization: `Bearer ${token}`,
-        Accept: 'application/json;odata.metadata=none',
         'Content-Type': 'application/json',
-        'OData-Version': '4.0'
+        'Accept': 'application/json'
       },
       data: {
         siteId: siteId
-      }
+      },
+      validateStatus: (status) => status < 600
     });
   }, {
     maxRetries: 2,
