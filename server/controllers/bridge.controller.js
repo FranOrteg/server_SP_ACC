@@ -231,9 +231,15 @@ async function spToNewAccProject(req, res, next) {
                 if (r?.ok && !r?.skipped) {
                   added++;
                   logger.info(`✅ Miembro añadido: ${u.email}`);
-                } else {
+                } else if (r?.ok && r?.skipped && r?.status === 409) {
+                  // 409 Conflict = usuario ya existe en el proyecto
                   skipped++;
                   logger.info(`⏭️ Miembro ya existente: ${u.email}`);
+                } else {
+                  // Otro tipo de error (ej: 400 Bad Request)
+                  failures++;
+                  const errorMsg = r?.error?.detail || r?.error?.errors?.[0]?.detail || r?.error || 'Error desconocido';
+                  logger.warn(`⚠️ Error añadiendo miembro ${u.email}: ${errorMsg}`, { status: r?.status, error: r?.error });
                 }
               } catch (e) {
                 failures++;
@@ -356,8 +362,15 @@ async function ensureProjectMemberLocal({ projectId, email, makeProjectAdmin, gr
   const products = [];
   if (makeProjectAdmin) products.push({ key: 'projectAdministration', access: 'administrator' });
 
+  // Convertir nivel a access de Autodesk
   const lvl = String(grantDocs || 'viewer').toLowerCase();
-  products.push({ key: 'docs', access: (lvl === 'admin' ? 'administrator' : (lvl === 'member' ? 'member' : 'viewer')) });
+  const access = lvl === 'admin' ? 'administrator' : (lvl === 'member' ? 'member' : 'viewer');
+  
+  // IMPORTANTE: Todos los productos deben tener el mismo nivel de acceso
+  // La API de Autodesk rechaza mezclar 'member' con 'administrator'
+  products.push({ key: 'docs', access });
+  products.push({ key: 'designCollaboration', access });
+  products.push({ key: 'modelCoordination', access });
 
   await apsUser.apiPost(
     `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users`,

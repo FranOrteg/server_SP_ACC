@@ -170,44 +170,45 @@ async function ensureProjectMember({
   email,
   makeProjectAdmin = true,
   grantDocs = 'admin',
-  grantDesignCollab = 'admin',
-  grantModelCoord = 'admin'
+  grantDesignCollab = null,  // null = heredar de grantDocs
+  grantModelCoord = null     // null = heredar de grantDocs
 }) {
   if (!projectId || !email) throw new Error('ensureProjectMember: projectId y email son obligatorios');
 
+  // Normalizar nivel base de grantDocs
+  const docsLvl = String(grantDocs || 'viewer').toLowerCase();
+  
+  // Si no se especifican grantDesignCollab/grantModelCoord, heredan de grantDocs
+  // Esto evita mezclar 'member' con 'administrator' que la API de Autodesk rechaza
+  const effectiveDesignCollab = grantDesignCollab !== null ? grantDesignCollab : grantDocs;
+  const effectiveModelCoord = grantModelCoord !== null ? grantModelCoord : grantDocs;
+
   const products = [];
 
-  // Project Administration
+  // Project Administration - solo si es admin
   if (makeProjectAdmin) products.push({ key: 'projectAdministration', access: 'administrator' });
+
+  // Helper para convertir nivel a access
+  const toAccess = (lvl) => {
+    const l = String(lvl || 'viewer').toLowerCase();
+    if (l === 'admin') return 'administrator';
+    if (l === 'member') return 'member';
+    return 'viewer';
+  };
 
   // Docs
   if (grantDocs) {
-    const lvl = String(grantDocs).toLowerCase();
-    let access = 'viewer';
-    if (lvl === 'admin') access = 'administrator';
-    else if (lvl === 'member') access = 'member';
-    else access = 'viewer';
-    products.push({ key: 'docs', access });
+    products.push({ key: 'docs', access: toAccess(grantDocs) });
   }
 
-  // Design Collaboration
-  if (grantDesignCollab) {
-    const lvl = String(grantDesignCollab).toLowerCase();
-    let access = 'viewer';
-    if (lvl === 'admin') access = 'administrator';
-    else if (lvl === 'member') access = 'member';
-    else access = 'viewer';
-    products.push({ key: 'designCollaboration', access });
+  // Design Collaboration - usa el nivel efectivo (heredado o explícito)
+  if (effectiveDesignCollab) {
+    products.push({ key: 'designCollaboration', access: toAccess(effectiveDesignCollab) });
   }
 
-  // Model Coordination
-  if (grantModelCoord) {
-    const lvl = String(grantModelCoord).toLowerCase();
-    let access = 'viewer';
-    if (lvl === 'admin') access = 'administrator';
-    else if (lvl === 'member') access = 'member';
-    else access = 'viewer';
-    products.push({ key: 'modelCoordination', access });
+  // Model Coordination - usa el nivel efectivo (heredado o explícito)
+  if (effectiveModelCoord) {
+    products.push({ key: 'modelCoordination', access: toAccess(effectiveModelCoord) });
   }
 
   const url = `/construction/admin/v1/projects/${encodeURIComponent(projectId)}/users`;
