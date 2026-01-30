@@ -8,6 +8,7 @@ const spAdmin = require('../services/admin.sp.service');
 const apsUser = require('../clients/apsUserClient');
 const { graphGet } = require('../clients/graphClient');
 const logger = require('../helpers/logger').mk('BRIDGE');
+const { setupSSE, cancelSession, getSessionInfo, listActiveSessions } = require('../helpers/progressEmitter');
 
 async function spToAcc(req, res, next) {
   try {
@@ -406,4 +407,414 @@ async function cloneMembersFallback({ fromProjectId, toProjectId, notify = false
   return { added, skipped, failures, total: src.length, results };
 }
 
-module.exports = { spToAcc, spTreeToAcc, spToNewAccProject };
+// =====================================================
+// STREAMING SSE: sp-to-new-acc-project/stream
+// =====================================================
+
+/**
+ * POST /api/bridge/sp-to-new-acc-project/stream
+ * Versión con Server-Sent Events para progreso en tiempo real
+ */
+async function spToNewAccProjectStream(req, res) {
+  // Configurar SSE
+  const { sessionId, emitter } = setupSSE(req, res);
+  
+  logger.info(`[SSE] Iniciando sesión de migración: ${sessionId}`);
+  
+  let partialResult = null;
+  let currentStep = 'reading';
+
+  try {
+    const {
+      driveId,
+      itemId,
+      hubId,
+      accountId,
+      cloneMembersFromProjectId,
+      mapSpMembers = true,
+      mode = 'upsert',
+    } = { ...req.query, ...(req.body || {}) };
+
+    // 1) Validaciones
+    if (!driveId || !itemId || !(hubId || accountId)) {
+      emitter.error(new Error('driveId, itemId y hubId|accountId son obligatorios'), null, 'reading');
+      res.end();
+      return;
+    }
+
+    // ===== FASE 1: READING =====
+    currentStep = 'reading';
+    emitter.progress({
+      currentStep,
+      stepProgress: 0,
+      message: 'Iniciando lectura de SharePoint...',
+      force: true
+    });
+    
+    emitter.checkCancellation();
+
+    // 2) Nombre del sitio SP → nombre del proyecto ACC
+    emitter.progress({
+      currentStep,
+      stepProgress: 30,
+      message: 'Resolviendo nombre del sitio de SharePoint...'
+    });
+
+    const siteName = await sp.getSiteNameForItem(driveId, itemId);
+    if (!siteName) {
+      emitter.error(new Error('No se pudo resolver el nombre del sitio de SharePoint'), null, 'reading');
+      res.end();
+      return;
+    }
+    const projectName = `${siteName} SP`;
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 60,
+      message: `Sitio encontrado: ${siteName}`
+    });
+    
+    emitter.checkCancellation();
+
+    // ===== FASE 2: PROCESSING =====
+    currentStep = 'processing';
+    emitter.progress({
+      currentStep,
+      stepProgress: 0,
+      message: 'Creando proyecto en Autodesk ACC...',
+      force: true
+    });
+
+    // 3) Crear proyecto ACC
+    const created = await accAdmin.createProject({
+      hubId,
+      accountId,
+      name: projectName,
+      onNameConflict: 'suffix-timestamp',
+    });
+
+    const projectIdDM = created?.dm?.projectIdDM || `b.${created.projectId}`;
+    const hubIdDM = `b.${created.accountId}`;
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 50,
+      message: `Proyecto creado: ${created.name}`
+    });
+    
+    emitter.checkCancellation();
+
+    partialResult = {
+      created: {
+        accountId: created.accountId,
+        projectId: created.projectId,
+        projectIdDM,
+        name: created.name,
+      }
+    };
+
+    // 4) Preparar carpeta destino
+    const destPath = `/Project Files`;
+    const targetFolderId = await acc.ensureFolderByPath(projectIdDM, destPath, { preferHubId: hubIdDM });
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 100,
+      message: 'Estructura del proyecto preparada'
+    });
+    
+    emitter.checkCancellation();
+
+    // ===== FASE 3: UPLOADING =====
+    currentStep = 'uploading';
+    emitter.progress({
+      currentStep,
+      stepProgress: 0,
+      message: 'Iniciando copia de archivos...',
+      force: true
+    });
+
+    // 5) Copiar árbol completo de SP → ACC (con progreso)
+    const copyLog = [];
+    const copyResult = await transfer.copySpTreeToAcc({
+      driveId,
+      itemId,
+      projectId: projectIdDM,
+      targetFolderId,
+      mode,
+      dryRun: false,
+      onLog: (m) => copyLog.push(m),
+      // Callback de progreso
+      onProgress: (progress) => {
+        emitter.checkCancellation();
+        emitter.progress({
+          currentStep: 'uploading',
+          stepProgress: progress.stepProgress,
+          message: `Subiendo: ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`,
+          totalItems: progress.totalFiles,
+          processedItems: progress.processedFiles,
+          currentItem: progress.currentFile,
+          bytesTotal: progress.bytesTotal,
+          bytesTransferred: progress.bytesTransferred
+        });
+      }
+    });
+
+    partialResult.copy = { ...copyResult, log: copyLog };
+    
+    emitter.updateStats({ 
+      bytes: copyResult.summary?.bytesUploaded || 0, 
+      files: copyResult.summary?.filesUploaded || 0 
+    });
+
+    // ===== FASE 4: MEMBERS =====
+    currentStep = 'members';
+    let spMembersSummary = null;
+    let cloneSummary = null;
+    let membersAdded = 0;
+
+    if (mapSpMembers && !cloneMembersFromProjectId) {
+      emitter.progress({
+        currentStep,
+        stepProgress: 0,
+        message: 'Configurando miembros del proyecto...',
+        force: true
+      });
+      
+      emitter.checkCancellation();
+
+      try {
+        // Helper para extraer siteUrl
+        const extractSiteUrl = (url) => {
+          if (!url) return null;
+          try {
+            const urlObj = new URL(url);
+            const m = urlObj.pathname.match(/\/(sites|teams)\/[^\/]+/i);
+            if (m) return `${urlObj.protocol}//${urlObj.host}${m[0]}`;
+            const base = urlObj.pathname.split('/').slice(0, 3).join('/');
+            if (base && (base.toLowerCase().startsWith('/sites/') || base.toLowerCase().startsWith('/teams/'))) {
+              return `${urlObj.protocol}//${urlObj.host}${base}`;
+            }
+            return `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
+          } catch {
+            return url;
+          }
+        };
+
+        const meta = await sp.getItemMeta(driveId, itemId);
+        let rawSiteUrl = meta?.parentReference?.siteUrl || meta?.webUrl || null;
+        let siteUrl = extractSiteUrl(rawSiteUrl);
+
+        if (!siteUrl) {
+          const { data: drv } = await graphGet(`/drives/${encodeURIComponent(driveId)}?$select=name,webUrl,sharepointIds`);
+          rawSiteUrl = drv?.webUrl || null;
+          siteUrl = extractSiteUrl(rawSiteUrl);
+          if (!siteUrl && drv?.sharepointIds?.siteId) {
+            const { data: site } = await graphGet(`/sites/${drv.sharepointIds.siteId}?$select=webUrl`);
+            siteUrl = site?.webUrl ? extractSiteUrl(site.webUrl) : null;
+          }
+        }
+
+        if (siteUrl) {
+          const spMembers = await spAdmin.getSiteMembers({ siteUrl, format: 'flat' });
+          const users = spMembers?.users || [];
+
+          if (users.length > 0) {
+            let added = 0, skipped = 0, failures = 0;
+            const results = [];
+            const total = users.length;
+
+            for (let i = 0; i < users.length; i++) {
+              const u = users[i];
+              
+              emitter.checkCancellation();
+              
+              emitter.progress({
+                currentStep,
+                stepProgress: Math.round((i / total) * 100),
+                message: `Añadiendo miembro: ${u.email || 'sin email'} (${i + 1}/${total})`,
+                totalItems: total,
+                processedItems: i
+              });
+
+              if (!u.email) continue;
+
+              try {
+                const accRole = mapSpRoleToAcc(u.role);
+                const r = await ensureProjectMemberLocal({
+                  projectId: created.projectId,
+                  email: u.email,
+                  makeProjectAdmin: accRole.makeProjectAdmin,
+                  grantDocs: accRole.grantDocs,
+                  notify: false,
+                });
+
+                results.push({ ok: true, email: u.email, spRole: u.role, accRole, result: r });
+                if (r?.ok && !r?.skipped) {
+                  added++;
+                } else if (r?.ok && r?.skipped && r?.status === 409) {
+                  skipped++;
+                } else {
+                  failures++;
+                  emitter.addNonCriticalError(`Error añadiendo ${u.email}: ${r?.error?.detail || 'desconocido'}`);
+                }
+              } catch (e) {
+                failures++;
+                const msg = e?.response?.data?.detail || e?.message || 'invite_failed';
+                results.push({ ok: false, email: u.email, spRole: u.role, error: msg });
+                emitter.addNonCriticalError(`Error añadiendo ${u.email}: ${msg}`);
+              }
+            }
+
+            spMembersSummary = { added, skipped, failures, total: users.length, results };
+            membersAdded = added;
+          }
+        }
+      } catch (e) {
+        if (e.message === 'CANCELLED') throw e;
+        spMembersSummary = { error: e?.message || 'Failed to map SP members', added: 0, skipped: 0, failures: 0 };
+        emitter.addNonCriticalError(`Error en mapeo de miembros: ${e?.message}`);
+      }
+    } else if (cloneMembersFromProjectId) {
+      emitter.progress({
+        currentStep,
+        stepProgress: 0,
+        message: 'Clonando miembros desde otro proyecto...',
+        force: true
+      });
+      
+      emitter.checkCancellation();
+
+      const canCallServiceClone = typeof accAdmin.cloneProjectMembers === 'function';
+      cloneSummary = canCallServiceClone
+        ? await accAdmin.cloneProjectMembers({
+            fromProjectId: cloneMembersFromProjectId,
+            toProjectId: created.projectId,
+            notify: false,
+          })
+        : await cloneMembersFallback({
+            fromProjectId: cloneMembersFromProjectId,
+            toProjectId: created.projectId,
+            notify: false,
+          });
+      membersAdded = cloneSummary?.added || 0;
+    }
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 100,
+      message: 'Configuración de miembros completada'
+    });
+
+    partialResult.mappedSpMembers = spMembersSummary;
+    partialResult.clonedMembers = cloneSummary;
+
+    // ===== FASE 5: FINALIZING =====
+    currentStep = 'finalizing';
+    emitter.progress({
+      currentStep,
+      stepProgress: 0,
+      message: 'Verificando migración...',
+      force: true
+    });
+    
+    emitter.checkCancellation();
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 50,
+      message: 'Generando resumen...'
+    });
+
+    // Resultado final
+    const finalResult = {
+      ok: true,
+      created: partialResult.created,
+      copy: partialResult.copy,
+      mappedSpMembers: spMembersSummary,
+      clonedMembers: cloneSummary,
+    };
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 100,
+      message: 'Migración completada exitosamente'
+    });
+
+    // Enviar evento complete
+    const stats = emitter.getStats();
+    emitter.complete(finalResult, {
+      filesProcessed: copyResult.summary?.filesUploaded || 0,
+      bytesTransferred: copyResult.summary?.bytesUploaded || 0,
+      membersAdded
+    });
+
+    logger.info(`[SSE] Migración completada: ${sessionId}`, { 
+      duration: stats.duration,
+      files: stats.filesProcessed,
+      bytes: stats.bytesTransferred
+    });
+
+  } catch (error) {
+    if (error.message === 'CANCELLED') {
+      emitter.cancelled(partialResult);
+      logger.info(`[SSE] Migración cancelada: ${sessionId}`);
+    } else {
+      emitter.error(error, partialResult, currentStep);
+      logger.error(`[SSE] Error en migración: ${sessionId}`, { error: error.message, step: currentStep });
+    }
+  }
+
+  res.end();
+}
+
+/**
+ * POST /api/bridge/sp-to-new-acc-project/cancel/:sessionId
+ * Cancela una sesión de migración en progreso
+ */
+function cancelMigrationSession(req, res) {
+  const { sessionId } = req.params;
+  const result = cancelSession(sessionId);
+  
+  if (result.ok) {
+    logger.info(`[SSE] Cancelación solicitada para sesión: ${sessionId}`);
+    res.json(result);
+  } else {
+    res.status(404).json(result);
+  }
+}
+
+/**
+ * GET /api/bridge/sp-to-new-acc-project/sessions
+ * Lista sesiones activas (admin/debug)
+ */
+function listMigrationSessions(req, res) {
+  const sessions = listActiveSessions();
+  res.json({ sessions, count: sessions.length });
+}
+
+/**
+ * GET /api/bridge/sp-to-new-acc-project/session/:sessionId
+ * Información de una sesión específica
+ */
+function getMigrationSession(req, res) {
+  const { sessionId } = req.params;
+  const info = getSessionInfo(sessionId);
+  
+  if (info) {
+    res.json(info);
+  } else {
+    res.status(404).json({ error: 'Sesión no encontrada' });
+  }
+}
+
+module.exports = { 
+  spToAcc, 
+  spTreeToAcc, 
+  spToNewAccProject,
+  // Nuevos endpoints de streaming
+  spToNewAccProjectStream,
+  cancelMigrationSession,
+  listMigrationSessions,
+  getMigrationSession
+};

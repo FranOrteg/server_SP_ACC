@@ -63,6 +63,41 @@ async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, f
   }
 }
 
+/**
+ * Pre-escanea el árbol de SharePoint para contar archivos y bytes totales
+ * @param {string} driveId - ID del drive de SharePoint
+ * @param {Object} folder - Objeto de carpeta raíz
+ * @returns {Object} { totalFiles, totalBytes, items[] }
+ */
+async function prescanSpTree(driveId, folder) {
+  const items = [];
+  let totalFiles = 0;
+  let totalBytes = 0;
+
+  async function scan(parent) {
+    const children = await sp.listChildrenByItem(driveId, parent.id);
+    for (const child of children) {
+      if (child.folder) {
+        await scan(child);
+      } else {
+        totalFiles++;
+        totalBytes += child.size || 0;
+        items.push({ id: child.id, name: child.name, size: child.size || 0 });
+      }
+    }
+  }
+
+  if (folder.folder) {
+    await scan(folder);
+  } else {
+    totalFiles = 1;
+    totalBytes = folder.size || 0;
+    items.push({ id: folder.id, name: folder.name, size: folder.size || 0 });
+  }
+
+  return { totalFiles, totalBytes, items };
+}
+
 async function copySpTreeToAcc({
   driveId,
   itemId,
@@ -70,10 +105,21 @@ async function copySpTreeToAcc({
   targetFolderId,
   mode = 'upsert',  // upsert | skip | rename
   dryRun = false,
-  onLog = () => {}
+  onLog = () => {},
+  onProgress = null  // NUEVO: callback de progreso { totalFiles, processedFiles, currentFile, bytesTotal, bytesTransferred }
 }) {
   const started = Date.now();
   const summary = { foldersCreated: 0, filesUploaded: 0, versionsCreated: 0, skipped: 0, bytesUploaded: 0 };
+
+  // Contexto de progreso compartido
+  const progressCtx = {
+    totalFiles: 0,
+    totalBytes: 0,
+    processedFiles: 0,
+    bytesTransferred: 0,
+    currentFile: '',
+    checkCancellation: onProgress?.checkCancellation || (() => {})
+  };
 
   const root = await sp.getItemMeta(driveId, itemId);
   if (!root) throw new Error(`SP item ${itemId} no encontrado`);
@@ -81,40 +127,78 @@ async function copySpTreeToAcc({
   const siteName = await sp.getSiteNameForItem(driveId, itemId);
   onLog(`📦 sitio SP: ${siteName}`);
 
+  // Pre-escanear para obtener totales (si hay callback de progreso)
+  if (onProgress) {
+    onLog(`🔍 Pre-escaneando estructura...`);
+    const scan = await prescanSpTree(driveId, root);
+    progressCtx.totalFiles = scan.totalFiles;
+    progressCtx.totalBytes = scan.totalBytes;
+    onLog(`📊 Encontrados ${scan.totalFiles} archivos (${formatBytes(scan.totalBytes)})`);
+  }
+
   const siteFolderId = await ensureAccFolder(projectId, targetFolderId, siteName, dryRun, onLog, summary);
 
   if (root.folder) {
     const treatAsRoot = sp.isDocLibRoot(root) || sp.isDriveRoot(root);
     if (treatAsRoot) {
       onLog(`➡️  copiando contenido de la biblioteca → "${siteName}"`);
-      await walkFolder(driveId, root, projectId, siteFolderId, mode, dryRun, onLog, summary);
+      await walkFolder(driveId, root, projectId, siteFolderId, mode, dryRun, onLog, summary, progressCtx, onProgress);
     } else {
       const subId = await ensureAccFolder(projectId, siteFolderId, root.name, dryRun, onLog, summary);
       onLog(`➡️  copiando carpeta "${root.name}" dentro de "${siteName}"`);
-      await walkFolder(driveId, root, projectId, subId, mode, dryRun, onLog, summary);
+      await walkFolder(driveId, root, projectId, subId, mode, dryRun, onLog, summary, progressCtx, onProgress);
     }
   } else {
     onLog(`➡️  copiando archivo "${root.name}" dentro de "${siteName}"`);
-    await copyOneFile(driveId, root, projectId, siteFolderId, mode, dryRun, onLog, summary);
+    await copyOneFile(driveId, root, projectId, siteFolderId, mode, dryRun, onLog, summary, progressCtx, onProgress);
+  }
+
+  // Reportar progreso final
+  if (onProgress) {
+    onProgress({
+      ...progressCtx,
+      processedFiles: progressCtx.totalFiles,
+      stepProgress: 100
+    });
   }
 
   return { ok: true, summary, tookMs: Date.now() - started };
 }
 
-async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryRun, onLog, summary) {
+// Helper para formatear bytes
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryRun, onLog, summary, progressCtx = null, onProgress = null) {
   const children = await sp.listChildrenByItem(driveId, spFolder.id);
   for (const child of children) {
+    // Verificar cancelación
+    if (progressCtx?.checkCancellation) {
+      progressCtx.checkCancellation();
+    }
+
     if (child.folder) {
       const subId = await ensureAccFolder(projectId, destFolderId, child.name, dryRun, onLog, summary);
-      await walkFolder(driveId, child, projectId, subId, mode, dryRun, onLog, summary);
+      await walkFolder(driveId, child, projectId, subId, mode, dryRun, onLog, summary, progressCtx, onProgress);
     } else {
       try {
-        await copyOneFile(driveId, child, projectId, destFolderId, mode, dryRun, onLog, summary);
+        await copyOneFile(driveId, child, projectId, destFolderId, mode, dryRun, onLog, summary, progressCtx, onProgress);
       } catch (e) {
+        if (e.message === 'CANCELLED') throw e;
         summary.errors = (summary.errors || 0) + 1;
         summary.failedFiles = summary.failedFiles || [];
         summary.failedFiles.push({ name: child.name, id: child.id, reason: e?.response?.status || e.message });
         onLog(`❌ fallo en ${child.name} (${child.id}) -> ${e?.response?.status || e.message}. Continuo…`);
+        // Incrementar progreso aunque falle
+        if (progressCtx) {
+          progressCtx.processedFiles++;
+          progressCtx.bytesTransferred += child.size || 0;
+        }
       }
     }
   }
@@ -132,9 +216,27 @@ async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, s
   return id;
 }
 
-async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRun, onLog, summary) {
+async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRun, onLog, summary, progressCtx = null, onProgress = null) {
   let fileName = spItem.name;
   const size = spItem.size || 0;
+
+  // Actualizar progreso: archivo actual
+  if (progressCtx) {
+    progressCtx.currentFile = fileName;
+    if (onProgress) {
+      const stepProgress = progressCtx.totalFiles > 0 
+        ? Math.round((progressCtx.processedFiles / progressCtx.totalFiles) * 100) 
+        : 0;
+      onProgress({
+        totalFiles: progressCtx.totalFiles,
+        processedFiles: progressCtx.processedFiles,
+        currentFile: fileName,
+        bytesTotal: progressCtx.totalBytes,
+        bytesTransferred: progressCtx.bytesTransferred,
+        stepProgress
+      });
+    }
+  }
 
   const existing = await acc.findItemByName(projectId, destFolderId, fileName);
   console.log(`[XFER][file] name=${fileName} size=${size} destFolderId=${destFolderId} exists=${!!existing}`);
@@ -178,9 +280,15 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
     }
 
     summary.bytesUploaded += size;
+
+    // Actualizar progreso después de completar archivo
+    if (progressCtx) {
+      progressCtx.processedFiles++;
+      progressCtx.bytesTransferred += size;
+    }
   } finally {
     try { fs.unlinkSync(tmpPath); } catch {}
   }
 }
 
-module.exports = { copySharePointItemToAcc, copySpTreeToAcc };
+module.exports = { copySharePointItemToAcc, copySpTreeToAcc, prescanSpTree };

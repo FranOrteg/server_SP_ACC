@@ -382,6 +382,36 @@ Content-Type: application/json
 }
 
 ################################################################################
+# SSE STREAMING - Migración con progreso en tiempo real
+################################################################################
+
+### (Bridge) Migración SP → ACC con STREAMING SSE (progreso en tiempo real)
+# IMPORTANTE: Este endpoint devuelve Server-Sent Events, no JSON
+# Usar con EventSource en el frontend o herramienta compatible SSE
+POST {{host}}{{urlBridge}}/sp-to-new-acc-project/stream
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+  "driveId": "{{SP_DRIVE_ID}}",
+  "itemId": "{{SP_ITEM_ID}}",
+  "hubId": "{{HUB_ID}}",
+  "mapSpMembers": true,
+  "mode": "upsert"
+}
+
+### Cancelar sesión de migración en progreso
+# Reemplazar {sessionId} con el UUID de la sesión activa
+POST {{host}}{{urlBridge}}/sp-to-new-acc-project/cancel/{sessionId}
+
+### Listar sesiones de migración activas
+GET {{host}}{{urlBridge}}/sp-to-new-acc-project/sessions
+
+### Obtener info de una sesión específica
+# Reemplazar {sessionId} con el UUID de la sesión
+GET {{host}}{{urlBridge}}/sp-to-new-acc-project/session/{sessionId}
+
+################################################################################
 # COMPROBACION TEMPORAL DEL ACOUNT ADMIN AAA
 ################################################################################
 

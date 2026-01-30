@@ -18,5 +18,11 @@ router.post('/sync-sp-segment', syncSegment);
 // --- Crear Proyecto durante la transferencia del Sitio SP ---
 router.post('/sp-to-new-acc-project', ctrl.spToNewAccProject);
 
+// --- STREAMING: Migración con progreso en tiempo real (SSE) ---
+router.post('/sp-to-new-acc-project/stream', ctrl.spToNewAccProjectStream);
+router.post('/sp-to-new-acc-project/cancel/:sessionId', ctrl.cancelMigrationSession);
+router.get('/sp-to-new-acc-project/sessions', ctrl.listMigrationSessions);
+router.get('/sp-to-new-acc-project/session/:sessionId', ctrl.getMigrationSession);
+
 
 module.exports = router;
