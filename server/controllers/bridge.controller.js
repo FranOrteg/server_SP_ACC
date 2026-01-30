@@ -774,12 +774,19 @@ async function spToNewAccProjectStream(req, res) {
  */
 function cancelMigrationSession(req, res) {
   const { sessionId } = req.params;
+  
+  // Debug: listar todas las sesiones activas
+  const allSessions = listActiveSessions();
+  logger.debug(`[CANCEL] Buscando sesión: ${sessionId}`);
+  logger.debug(`[CANCEL] Sesiones activas (${allSessions.length}):`, allSessions.map(s => s.sessionId));
+  
   const result = cancelSession(sessionId);
   
   if (result.ok) {
     logger.info(`[SSE] Cancelación solicitada para sesión: ${sessionId}`);
     res.json(result);
   } else {
+    logger.warn(`[CANCEL] Sesión no encontrada: ${sessionId}`);
     res.status(404).json(result);
   }
 }

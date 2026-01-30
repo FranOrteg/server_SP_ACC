@@ -255,8 +255,11 @@ function setupSSE(req, res) {
     res, 
     cancelled: false,           // Cancelación explícita del usuario
     clientDisconnected: false,  // Cliente cerró la conexión
+    completed: false,           // El proceso ha terminado (success o error)
     startedAt: Date.now() 
   });
+
+  console.log('[SSE] Sesión creada:', sessionId, '| Total sesiones activas:', activeSessions.size);
 
   // Manejar desconexión del cliente
   // NOTA: En SSE con POST, el evento 'close' puede dispararse cuando termina el body
@@ -276,7 +279,8 @@ function setupSSE(req, res) {
       socketDestroyed,
       responseEnded,
       clientAborted,
-      alreadyCancelled: session.cancelled
+      alreadyCancelled: session.cancelled,
+      completed: session.completed
     });
 
     // Solo marcar como desconectado si hay evidencia real de desconexión
@@ -286,8 +290,20 @@ function setupSSE(req, res) {
       console.log('[SSE] Cliente realmente desconectado:', sessionId);
     }
     
-    // Limpiar después de un delay para permitir que el proceso termine
-    setTimeout(() => activeSessions.delete(sessionId), 5000);
+    // NO eliminar la sesión aquí - se elimina cuando el proceso termina
+    // o después de un tiempo largo (5 minutos) para permitir cancelación
+    // La sesión se elimina en res.on('finish') cuando el proceso completa
+    if (!session.completed) {
+      // El proceso aún está corriendo, programar limpieza para más tarde
+      // 5 minutos es suficiente para que el usuario pueda cancelar
+      setTimeout(() => {
+        const s = activeSessions.get(sessionId);
+        if (s && !s.completed) {
+          console.log('[SSE] Limpieza de sesión huérfana:', sessionId);
+          activeSessions.delete(sessionId);
+        }
+      }, 5 * 60 * 1000); // 5 minutos
+    }
   });
 
   // Keep-alive ping cada 30 segundos
@@ -306,7 +322,13 @@ function setupSSE(req, res) {
   // Limpiar interval cuando termine
   res.on('finish', () => {
     clearInterval(keepAlive);
-    activeSessions.delete(sessionId);
+    const session = activeSessions.get(sessionId);
+    if (session) {
+      session.completed = true;
+      console.log('[SSE] Sesión completada, programando limpieza:', sessionId);
+      // Dar un pequeño margen antes de eliminar por si hay peticiones de info pendientes
+      setTimeout(() => activeSessions.delete(sessionId), 10000); // 10 segundos
+    }
   });
 
   return { sessionId, emitter: createProgressEmitter(res, sessionId) };
@@ -316,11 +338,17 @@ function setupSSE(req, res) {
  * Cancela una sesión activa
  */
 function cancelSession(sessionId) {
+  console.log('[CANCEL] Buscando sesión en activeSessions:', sessionId);
+  console.log('[CANCEL] Sesiones disponibles:', [...activeSessions.keys()]);
+  
   const session = activeSessions.get(sessionId);
   if (session) {
+    console.log('[CANCEL] Sesión encontrada, marcando como cancelled');
     session.cancelled = true;
     return { ok: true, message: 'Cancelación solicitada' };
   }
+  
+  console.log('[CANCEL] Sesión NO encontrada');
   return { ok: false, message: 'Sesión no encontrada' };
 }
 
