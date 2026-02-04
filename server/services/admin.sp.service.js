@@ -383,6 +383,99 @@ async function addToM365Group(groupId, userObjectId, asOwner = false) {
   });
 }
 
+/**
+ * Crea un Team Site con Microsoft 365 Group asociado usando Graph API
+ * @param {Object} params
+ * @param {string} params.displayName - Nombre del sitio/grupo
+ * @param {string} params.mailNickname - Alias de correo (solo caracteres alfanuméricos, sin espacios)
+ * @param {string} params.description - Descripción
+ * @param {Array} params.owners - Array de emails de propietarios
+ * @returns {Promise<{groupId: string, siteUrl: string, siteId: string}>}
+ */
+async function createTeamSiteWithGroup({ displayName, mailNickname, description = '', owners = [] }) {
+  logger.info('Creando Team Site con M365 Group', { displayName, mailNickname, owners });
+
+  // 1. Crear el grupo de Microsoft 365 con sitio de SharePoint
+  // Nota: La creación automática de SharePoint se activa con groupTypes: ["Unified"]
+  const groupPayload = {
+    displayName,
+    mailNickname,
+    description: description || displayName,
+    mailEnabled: true,
+    securityEnabled: false,
+    groupTypes: ["Unified"],
+    visibility: "Private" // o "Public" según necesites
+  };
+
+  const { data: group } = await graphPost('/groups', groupPayload);
+  const groupId = group.id;
+
+  logger.debug('Grupo M365 creado', { groupId, displayName });
+
+  // 2. Agregar propietarios al grupo
+  // Nota: Necesitamos esperar un momento para que el grupo esté completamente provisionado
+  await sleep(2000);
+  
+  if (owners && owners.length > 0) {
+    for (const ownerEmail of owners) {
+      try {
+        const oid = await resolveAadUserObjectId(ownerEmail);
+        if (oid) {
+          // Primero agregar como member (requerido antes de agregar como owner)
+          try {
+            await addToM365Group(groupId, oid, false); // false = member
+          } catch (memberErr) {
+            // Ignorar si ya es member
+            const msg = memberErr?.response?.data?.error?.message || '';
+            if (!/already exist/i.test(msg)) {
+              logger.debug('Error agregando como member (puede ser esperado)', { ownerEmail, error: memberErr.message });
+            }
+          }
+          
+          // Luego agregar como owner
+          await addToM365Group(groupId, oid, true); // true = owner
+          logger.debug('Owner agregado al grupo', { groupId, ownerEmail });
+        }
+      } catch (e) {
+        const msg = e?.response?.data?.error?.message || e?.message || '';
+        if (/already exist/i.test(msg)) {
+          logger.debug('Owner ya existía en el grupo', { ownerEmail });
+        } else {
+          logger.warn('No se pudo agregar owner', { ownerEmail, error: msg });
+        }
+      }
+    }
+  }
+
+  // 3. Esperar a que SharePoint provisione el sitio asociado
+  // El sitio puede tardar unos minutos en estar disponible
+  let siteUrl = null;
+  let siteId = null;
+  const maxAttempts = 30;
+  const delayMs = 5000;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const { data: site } = await graphGet(`/groups/${groupId}/sites/root?$select=id,webUrl`);
+      if (site?.webUrl) {
+        siteUrl = site.webUrl;
+        siteId = site.id;
+        logger.info('Sitio SharePoint del grupo provisionado', { groupId, siteUrl, siteId });
+        break;
+      }
+    } catch (e) {
+      if (i < maxAttempts - 1) {
+        logger.debug(`Esperando provisionamiento del sitio (intento ${i + 1}/${maxAttempts})`, { groupId });
+        await sleep(delayMs);
+      } else {
+        throw new Error(`El sitio SharePoint no se provisionó después de ${maxAttempts} intentos. GroupId: ${groupId}`);
+      }
+    }
+  }
+
+  return { groupId, siteUrl, siteId };
+}
+
 // ------------------------ waits ------------------------
 async function getSiteIdFromAdminApi(siteUrl) {
   try {
@@ -601,9 +694,45 @@ async function createSite({
   url,
   description = '',
   lcid = 1033,
-  classification = ''
+  classification = '',
+  members = []  // <-- Nuevo parámetro para propietarios
 }) {
   if (!url) throw new Error('url es obligatorio');
+
+  // === NUEVO: Manejar TeamSiteWithGroup con Microsoft 365 Group ===
+  if (type === 'TeamSiteWithGroup') {
+    logger.info('Creando Team Site con M365 Group', { url, title });
+    
+    // Extraer propietarios del array de members
+    const owners = (members || [])
+      .filter(m => (m.role || '').toLowerCase() === 'owner')
+      .map(m => m.user)
+      .filter(Boolean);
+
+    if (owners.length === 0) {
+      throw new Error('TeamSiteWithGroup requiere al menos un propietario (role: "Owner") en members[]');
+    }
+
+    // Extraer mailNickname de la URL (parte después de /sites/)
+    const urlParts = url.split('/sites/');
+    if (urlParts.length < 2) {
+      throw new Error('URL inválida para Team Site. Formato esperado: https://tenant.sharepoint.com/sites/sitename');
+    }
+    const mailNickname = urlParts[1].replace(/\//g, ''); // Remover cualquier slash adicional
+
+    // Crear el grupo y el sitio
+    const result = await createTeamSiteWithGroup({
+      displayName: title,
+      mailNickname,
+      description,
+      owners
+    });
+
+    logger.info('Team Site con M365 Group creado exitosamente', result);
+    return { siteId: result.siteId, siteUrl: result.siteUrl, status: 2, groupId: result.groupId };
+  }
+
+  // === FIN NUEVO ===
 
   try {
     const existing = await sp.resolveSiteIdFlexible({ url });
@@ -638,6 +767,29 @@ async function createSite({
 
   logger.info('Creando sitio SP', { type, url, title });
 
+  // === MODIFICADO: Determinar Owner según el tipo de sitio ===
+  // El campo Owner debe ser siempre un email/UPN válido de usuario
+  let siteOwner;
+  
+  // Buscar el primer owner en members[]
+  const owners = (members || [])
+    .filter(m => (m.role || '').toLowerCase() === 'owner')
+    .map(m => m.user)
+    .filter(Boolean);
+  
+  if (owners.length > 0) {
+    // Usar el primer owner como propietario principal del sitio
+    siteOwner = owners[0];
+    logger.debug('Usando primer owner de members[] como propietario del sitio', { siteOwner });
+  } else {
+    // Fallback a variable de entorno
+    siteOwner = process.env.SPO_SITE_OWNER || undefined;
+    if (siteOwner) {
+      logger.debug('Usando SPO_SITE_OWNER como propietario del sitio', { siteOwner });
+    }
+  }
+  // === FIN MODIFICADO ===
+
   const payload = {
     request: {
       Title: title || '',
@@ -647,7 +799,7 @@ async function createSite({
       Classification: classification || null,
       WebTemplate: (type === 'TeamSite') ? 'STS#3' : 'SITEPAGEPUBLISHING#0',
       Description: description || '',
-      Owner: process.env.SPO_SITE_OWNER || undefined
+      Owner: siteOwner
     }
   };
 

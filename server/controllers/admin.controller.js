@@ -423,8 +423,13 @@ async function createSpSite(req, res, next) {
       type, url, title: resolvedName
     });
 
+    // Pasar members a createSite para que pueda determinar el Owner correctamente
     const created = await spAdmin.createSite({
-      type, title: resolvedName, url, description
+      type, 
+      title: resolvedName, 
+      url, 
+      description,
+      members  // <-- Nuevo: pasar miembros
     });
 
     logger.mk('SP-CTRL').info('Sitio creado, aplicando plantilla', {
