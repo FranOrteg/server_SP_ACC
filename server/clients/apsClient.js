@@ -224,6 +224,31 @@ async function apiPut(url, body, config = {}) {
   }
 }
 
+async function apiPatch(url, body, config = {}) {
+  const access = await getAppAccessToken();
+  const path = url.startsWith('http') ? url.replace(APS_BASE, '') : url;
+
+  const isProv = config?.meta?.provisioning === true;
+  const tries  = isProv ? 1 : maxRetriesDefault();
+  const quiet  = isProv || !!config?.meta?.quiet;
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(config.headers || {}),
+    Authorization: `Bearer ${access}`
+  };
+  try {
+    return await withRetry(`PATCH ${path}`, async () => {
+      const { data, status } = await ax.patch(path, body, { ...config, headers });
+      if (status < 200 || status >= 300) throw new Error(`PATCH ${path} => ${status}`);
+      return data;
+    }, { tries, quiet });
+  } catch (err) {
+    logApsError(`PATCH ${path}`, err, config?.meta);
+    throw err;
+  }
+}
+
 module.exports = {
   // 2LO only
   getAppAccessToken,
@@ -232,6 +257,7 @@ module.exports = {
   apiGet,
   apiPost,
   apiPut,
+  apiPatch,
   getConfiguredScopes,
   sleep
 };

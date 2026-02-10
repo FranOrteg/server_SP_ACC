@@ -190,8 +190,26 @@ async function apiPost(url, body, config = {}) {
   }
 }
 
+async function apiPatch(url, body, config = {}) {
+  const access = await refreshIfNeeded();
+  const path = url.startsWith('http') ? url : `${APS_BASE}${url}`;
+  const started = Date.now();
+  try {
+    const { data, status } = await axios.patch(path, body, {
+      timeout: 10000,
+      ...config,
+      headers: { 'Content-Type': 'application/json', ...(config.headers || {}), Authorization: `Bearer ${access}` }
+    });
+    logHttpSuccess('patch', url, status, started, config.meta);
+    return data;
+  } catch (err) {
+    logHttpError('patch', url, err, started, config.meta);
+    throw err;
+  }
+}
+
 // Helpers para router OAuth
 function hasUserToken() { return !!userToken?.access_token; }
 function clearUserToken() { userToken = null; }
 
-module.exports = { exchangeCodeForToken, apiGet, apiPost, hasUserToken, clearUserToken, peekToken };
+module.exports = { exchangeCodeForToken, apiGet, apiPost, apiPatch, hasUserToken, clearUserToken, peekToken };

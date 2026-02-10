@@ -948,6 +948,156 @@ async function deleteSite(req, res) {
   }
 }
 
+// ------------------------- Archive ACC Project -------------------------
+
+/**
+ * Renombra un proyecto ACC
+ * @route PATCH /api/admin/acc/projects/:projectId/rename
+ */
+async function renameAccProject(req, res, next) {
+  try {
+    const { projectId } = req.params;
+    const { hubId, newName } = req.body || {};
+
+    if (!hubId || !projectId || !newName) {
+      return res.status(400).json({
+        success: false,
+        error: 'hubId, projectId y newName son obligatorios',
+        code: 'MISSING_PARAMS'
+      });
+    }
+
+    const result = await accAdmin.renameProject({
+      hubId,
+      projectId,
+      newName
+    });
+
+    res.json({
+      success: true,
+      project: {
+        id: result.projectId,
+        name: result.newName,
+        previousName: result.previousName
+      }
+    });
+  } catch (e) {
+    const { status, detail } = mapError(e, 'rename_project_failed');
+    res.status(status || 500).json({
+      success: false,
+      error: detail,
+      code: e.code || 'RENAME_FAILED'
+    });
+  }
+}
+
+/**
+ * Archiva un proyecto ACC (renombrar + restringir permisos)
+ * @route POST /api/admin/acc/projects/archive
+ */
+async function archiveAccProject(req, res, next) {
+  try {
+    const { hubId, projectId, options = {} } = req.body || {};
+
+    if (!hubId || !projectId) {
+      return res.status(400).json({
+        success: false,
+        error: 'hubId y projectId son obligatorios',
+        code: 'MISSING_PARAMS'
+      });
+    }
+
+    logger.mk('ADMIN-CTRL').info('🗄️ Iniciando archivo de proyecto ACC:', {
+      hubId,
+      projectId,
+      options,
+      timestamp: new Date().toISOString()
+    });
+
+    const result = await accAdmin.archiveProject({
+      hubId,
+      projectId,
+      options
+    });
+
+    if (!result.success) {
+      logger.mk('ADMIN-CTRL').warn('⚠️ Archivo de proyecto con errores:', {
+        projectId,
+        errors: result.errors
+      });
+      
+      return res.status(207).json({
+        success: false,
+        archived: result.archived,
+        permissions: result.permissions,
+        errors: result.errors
+      });
+    }
+
+    logger.mk('ADMIN-CTRL').info('✅ Proyecto archivado correctamente:', {
+      projectId,
+      newName: result.archived?.newName,
+      membersModified: result.permissions?.membersModified
+    });
+
+    res.json({
+      success: true,
+      archived: result.archived,
+      permissions: result.permissions
+    });
+  } catch (e) {
+    const { status, detail } = mapError(e, 'archive_project_failed');
+    logger.mk('ADMIN-CTRL').error('❌ Error al archivar proyecto:', {
+      projectId: req.body?.projectId,
+      error: detail
+    });
+    res.status(status || 500).json({
+      success: false,
+      error: detail,
+      code: 'ARCHIVE_FAILED'
+    });
+  }
+}
+
+/**
+ * Obtiene los usuarios de un proyecto ACC
+ * @route GET /api/admin/acc/projects/:projectId/users
+ */
+async function getAccProjectUsers(req, res, next) {
+  try {
+    const { projectId } = req.params;
+
+    if (!projectId) {
+      return res.status(400).json({
+        success: false,
+        error: 'projectId es obligatorio',
+        code: 'MISSING_PARAMS'
+      });
+    }
+
+    const users = await accAdmin.getProjectUsers(projectId);
+
+    res.json({
+      success: true,
+      total: users.length,
+      users: users.map(u => ({
+        id: u.id,
+        email: u.email,
+        name: u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim(),
+        status: u.status,
+        products: u.products || []
+      }))
+    });
+  } catch (e) {
+    const { status, detail } = mapError(e, 'get_project_users_failed');
+    res.status(status || 500).json({
+      success: false,
+      error: detail,
+      code: 'GET_USERS_FAILED'
+    });
+  }
+}
+
 module.exports = {
   getTemplate,
   applyAcc,
@@ -966,6 +1116,9 @@ module.exports = {
   listAccAccountUsers,
   listTemplates,
   archiveSlackChannel,
-  deleteSite
+  deleteSite,
+  renameAccProject,
+  archiveAccProject,
+  getAccProjectUsers
 };
 

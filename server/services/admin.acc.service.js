@@ -414,11 +414,341 @@ async function applyTemplateToProject({
   return { ok: true, hubIdDM, projectIdDM: pidDM, folders: created };
 }
 
+// ------------------ Renombrar proyecto (Archive) ------------------
+
+/**
+ * Renombra un proyecto ACC/BIM360 usando HQ Admin API (2-legged OAuth).
+ * PATCH https://developer.api.autodesk.com/hq/v1/accounts/:account_id/projects/:project_id
+ * Docs: https://aps.autodesk.com/en/docs/bim360/v1/reference/http/projects-:project_id-PATCH/
+ *
+ * IMPORTANTE:
+ * - Requiere 2LO (client_credentials) con scope account:write
+ * - Usa /hq/v1/accounts/... (NO /construction/admin/...)
+ * - Si la cuenta está en EU, hace fallback a /hq/v1/regions/eu/...
+ */
+async function renameProject({ hubId, projectId, newName }) {
+  if (!hubId || !projectId || !newName) {
+    throw new Error('renameProject: hubId, projectId y newName son obligatorios');
+  }
+
+  // Normalizar IDs (sin prefijo "b.")
+  const projectIdNorm = String(projectId).replace(/^b\./, '');
+  const accountIdNorm = String(hubId).replace(/^b\./, '');
+
+  // Obtener nombre actual del proyecto desde Construction Admin (3LO)
+  let previousName = null;
+  try {
+    const projectData = await apsUser.apiGet(`/construction/admin/v1/projects/${encodeURIComponent(projectIdNorm)}`);
+    previousName = projectData?.name || null;
+  } catch (e) {
+    log.warn('[renameProject] No se pudo obtener nombre actual del proyecto:', e.message);
+  }
+
+  // Payload plano para HQ API
+  const payload = { name: newName };
+
+  // Intentar primero con ruta US, luego fallback EU
+  const usUrl = `/hq/v1/accounts/${encodeURIComponent(accountIdNorm)}/projects/${encodeURIComponent(projectIdNorm)}`;
+  const euUrl = `/hq/v1/regions/eu/accounts/${encodeURIComponent(accountIdNorm)}/projects/${encodeURIComponent(projectIdNorm)}`;
+
+  const tryPatch = async (url) => {
+    log.debug('[renameProject] PATCH (2LO):', url);
+    return await aps2LO.apiPatch(url, payload);
+  };
+
+  try {
+    const result = await tryPatch(usUrl);
+    log.info('[renameProject] Proyecto renombrado (US):', { projectId: projectIdNorm, previousName, newName });
+    return {
+      ok: true,
+      projectId: projectIdNorm,
+      hubId: `b.${accountIdNorm}`,
+      previousName,
+      newName,
+      renamedAt: new Date().toISOString()
+    };
+  } catch (usError) {
+    const usStatus = usError?.response?.status;
+    // Si es 404 o 400 puede ser que la cuenta esté en EU
+    if (usStatus === 404 || usStatus === 400) {
+      log.warn('[renameProject] US falló con', usStatus, '→ intentando EU');
+      try {
+        const result = await tryPatch(euUrl);
+        log.info('[renameProject] Proyecto renombrado (EU):', { projectId: projectIdNorm, previousName, newName });
+        return {
+          ok: true,
+          projectId: projectIdNorm,
+          hubId: `b.${accountIdNorm}`,
+          previousName,
+          newName,
+          renamedAt: new Date().toISOString()
+        };
+      } catch (euError) {
+        const euStatus = euError?.response?.status;
+        const euData = euError?.response?.data;
+        log.error('[renameProject] Ambas regiones fallaron:', {
+          usStatus,
+          euStatus,
+          euData: JSON.stringify(euData)
+        });
+        const detail = euData?.developerMessage || euData?.message || euError?.message || 'rename_failed';
+        const err = new Error(detail);
+        err.status = euStatus || 500;
+        err.code = 'RENAME_FAILED';
+        throw err;
+      }
+    }
+
+    // Otro error (403, 409, 500, etc.) -> no reintentar con EU
+    const usData = usError?.response?.data;
+    log.error('[renameProject] Error:', { usStatus, usData: JSON.stringify(usData) });
+    const detail = usData?.developerMessage || usData?.message || usError?.message || 'rename_failed';
+    const err = new Error(detail);
+    err.status = usStatus || 500;
+    err.code = 'RENAME_FAILED';
+    throw err;
+  }
+}
+
+// ------------------ Listar usuarios del proyecto ------------------
+
+/**
+ * Obtiene todos los usuarios de un proyecto ACC.
+ * GET /construction/admin/v1/projects/:projectId/users
+ */
+async function getProjectUsers(projectId, { limit = 100, offset = 0 } = {}) {
+  if (!projectId) throw new Error('getProjectUsers: projectId es obligatorio');
+
+  const projectIdNorm = String(projectId).replace(/^b\./, '');
+  const url = `/construction/admin/v1/projects/${encodeURIComponent(projectIdNorm)}/users`;
+  
+  const allUsers = [];
+  let currentOffset = offset;
+  let hasMore = true;
+
+  while (hasMore) {
+    try {
+      const result = await apsUser.apiGet(url, {
+        params: { limit, offset: currentOffset },
+        timeout: 15000
+      });
+
+      const users = result?.results || result || [];
+      if (Array.isArray(users) && users.length > 0) {
+        allUsers.push(...users);
+        currentOffset += users.length;
+        hasMore = users.length === limit;
+      } else {
+        hasMore = false;
+      }
+    } catch (e) {
+      log.error('[getProjectUsers] Error:', e.message);
+      throw e;
+    }
+  }
+
+  log.info('[getProjectUsers] Total usuarios obtenidos:', allUsers.length);
+  return allUsers;
+}
+
+// ------------------ Actualizar acceso de usuario ------------------
+
+/**
+ * Actualiza el acceso a productos de un usuario en un proyecto ACC.
+ * PATCH /construction/admin/v1/projects/:projectId/users/:userId
+ */
+async function updateProjectUserAccess(projectId, userId, { products }) {
+  if (!projectId || !userId) {
+    throw new Error('updateProjectUserAccess: projectId y userId son obligatorios');
+  }
+
+  const projectIdNorm = String(projectId).replace(/^b\./, '');
+  const url = `/construction/admin/v1/projects/${encodeURIComponent(projectIdNorm)}/users/${encodeURIComponent(userId)}`;
+
+  const payload = { products };
+
+  try {
+    const result = await apsUser.apiPatch(url, payload);
+    log.debug('[updateProjectUserAccess] Usuario actualizado:', { userId, products });
+    return { ok: true, userId, products };
+  } catch (e) {
+    const status = e?.response?.status;
+    const detail = e?.response?.data?.errors?.[0]?.detail || e?.response?.data?.message || e?.message || 'update_failed';
+    log.warn('[updateProjectUserAccess] Error:', { userId, status, detail });
+    return { ok: false, userId, error: detail, status };
+  }
+}
+
+// ------------------ Archivar proyecto (Renombrar + Restringir permisos) ------------------
+
+/**
+ * Archiva un proyecto ACC:
+ * 1. Renombra el proyecto con un prefijo (ej: "Closed_")
+ * 2. Restringe los permisos de todos los miembros a solo "docs"
+ */
+async function archiveProject({
+  hubId,
+  projectId,
+  options = {}
+}) {
+  const {
+    renamePrefix = 'Closed_',
+    restrictToDocsOnly = true,
+    removeFromProducts = ['designCollaboration', 'modelCoordination', 'projectManagement', 'costManagement', 'fieldManagement']
+  } = options;
+
+  if (!hubId || !projectId) {
+    throw new Error('archiveProject: hubId y projectId son obligatorios');
+  }
+
+  const result = {
+    success: true,
+    archived: null,
+    permissions: null,
+    errors: []
+  };
+
+  // 1. Obtener nombre actual y renombrar
+  const hubIdNorm = ensureB(hubId);
+  const projectIdClean = String(projectId).replace(/^b\./, '');
+
+  let previousName = null;
+  let newName = null;
+
+  try {
+    // Obtener info del proyecto usando Construction Admin API
+    const projectUrl = `/construction/admin/v1/projects/${encodeURIComponent(projectIdClean)}`;
+    const projectData = await apsUser.apiGet(projectUrl);
+    previousName = projectData?.name || 'Unknown';
+
+    // Solo renombrar si no tiene ya el prefijo
+    if (!previousName.startsWith(renamePrefix)) {
+      newName = `${renamePrefix}${previousName}`;
+      const renameResult = await renameProject({ hubId: hubIdNorm, projectId: projectIdClean, newName });
+      result.archived = {
+        projectId: projectIdClean,
+        newName,
+        previousName,
+        renamedAt: renameResult.renamedAt
+      };
+    } else {
+      newName = previousName;
+      result.archived = {
+        projectId: projectIdClean,
+        newName: previousName,
+        previousName,
+        renamedAt: null,
+        skipped: true,
+        reason: 'Project already has archive prefix'
+      };
+    }
+  } catch (e) {
+    result.success = false;
+    result.errors.push({
+      phase: 'rename',
+      error: e.message,
+      code: e.code || 'RENAME_FAILED'
+    });
+    log.error('[archiveProject] Error en renombrado:', e.message);
+  }
+
+  // 2. Restringir permisos si se solicita
+  if (restrictToDocsOnly) {
+    try {
+      const users = await getProjectUsers(projectIdClean);
+
+      const permissionResult = {
+        totalMembers: users.length,
+        membersModified: 0,
+        membersSkipped: 0,
+        details: []
+      };
+
+      for (const user of users) {
+        const userId = user.id;
+        const email = user.email || '';
+        const name = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
+        
+        // Obtener productos actuales del usuario
+        const currentProducts = user.products || [];
+        const productsToRemove = [];
+        const productsToKeep = [];
+        const newProducts = [];
+
+        for (const prod of currentProducts) {
+          const prodKey = prod.key || prod;
+          if (removeFromProducts.includes(prodKey)) {
+            productsToRemove.push(prodKey);
+          } else {
+            productsToKeep.push(prodKey);
+            // Mantener el producto con su acceso actual
+            newProducts.push({
+              key: prodKey,
+              access: prod.access || 'member'
+            });
+          }
+        }
+
+        // Si hay productos a remover, actualizar
+        if (productsToRemove.length > 0) {
+          const updateResult = await updateProjectUserAccess(projectIdClean, userId, {
+            products: newProducts
+          });
+
+          permissionResult.details.push({
+            userId,
+            email,
+            name,
+            status: updateResult.ok ? 'modified' : 'failed',
+            productsRemoved: productsToRemove,
+            productsKept: productsToKeep,
+            error: updateResult.error || null
+          });
+
+          if (updateResult.ok) {
+            permissionResult.membersModified++;
+          } else {
+            permissionResult.membersSkipped++;
+          }
+        } else {
+          // Usuario sin productos a remover
+          permissionResult.membersSkipped++;
+          permissionResult.details.push({
+            userId,
+            email,
+            name,
+            status: 'skipped',
+            productsRemoved: [],
+            productsKept: productsToKeep,
+            reason: 'No products to remove'
+          });
+        }
+      }
+
+      result.permissions = permissionResult;
+    } catch (e) {
+      result.success = false;
+      result.errors.push({
+        phase: 'permissions',
+        error: e.message,
+        code: 'PERMISSIONS_UPDATE_FAILED'
+      });
+      log.error('[archiveProject] Error actualizando permisos:', e.message);
+    }
+  }
+
+  return result;
+}
+
 module.exports = {
   createProject,
   applyTemplateToProject,
   activateDocs,
   ensureProjectMember,
   listAccountUsers,
-  normalizeAccountUsersResponse
+  normalizeAccountUsersResponse,
+  renameProject,
+  getProjectUsers,
+  updateProjectUserAccess,
+  archiveProject
 };

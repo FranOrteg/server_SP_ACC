@@ -57,6 +57,15 @@ router.get('/acc/accounts/:accountId/projects', async (req, res, next) => {
 // Crear proyecto ACC desde plantilla/base
 router.post('/acc/projects/create', ctrl.createAccProject);
 
+// Archivar proyecto ACC (renombrar + restringir permisos)
+router.post('/acc/projects/archive', ctrl.archiveAccProject);
+
+// Renombrar proyecto ACC
+router.patch('/acc/projects/:projectId/rename', ctrl.renameAccProject);
+
+// Obtener usuarios de un proyecto ACC
+router.get('/acc/projects/:projectId/users', ctrl.getAccProjectUsers);
+
 // Aplicar plantilla a ACC (sobre proyecto existente)
 router.post('/apply/acc', ctrl.applyAcc);   // ruta existente
 router.post('/acc/apply', ctrl.applyAcc);   // alias canónico
