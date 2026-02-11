@@ -1,10 +1,9 @@
 const { spoAdminPost, spoAdminGet } = require('../clients/spoClient');
-const { spoTenantGet, spoTenantPost } = require('../clients/spoTenantClient');
+const { spoTenantGet, spoTenantPost, spoTenantMerge } = require('../clients/spoTenantClient');
 const logger = require('../helpers/logger').mk('SP');
-const { graphGet, graphPost } = require('../clients/graphClient');
+const { graphGet, graphPost, graphPatch, graphDelete } = require('../clients/graphClient');
 const sp = require('./sharepoint.service');
 const { expandFolders, getPermissions } = require('./admin.template.service');
-const { graphDelete } = require('../clients/graphClient');
 
 // ------------------------ utils ------------------------
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -687,6 +686,80 @@ async function applyTemplateToSite({ siteId, siteUrl, template, resolvedName }) 
   }
 }
 
+// ------------ Configurar límite de versiones de biblioteca ----------
+
+/**
+ * Configura el límite de versiones principales de la biblioteca de documentos
+ * de un sitio SP mediante SharePoint REST API.
+ *
+ * Usa BaseTemplate=101 para localizar la document library principal,
+ * independientemente del idioma ("Documents", "Documentos", etc.).
+ *
+ * SP REST API:
+ *   GET  {siteUrl}/_api/web/lists?$filter=BaseTemplate eq 101
+ *   POST {siteUrl}/_api/web/lists(guid'{listId}')  (X-HTTP-Method: MERGE)
+ *
+ * @param {string} siteUrl          URL absoluta del sitio (ej: https://tenant.sharepoint.com/sites/PRJ-X)
+ * @param {number} [versionLimit=5] Número máximo de versiones principales
+ * @returns {{ success: boolean, listId?: string, library?: string, versionLimit?: number, error?: string }}
+ */
+async function configureVersionLimit(siteUrl, versionLimit = 5) {
+  if (!siteUrl) {
+    logger.warn('configureVersionLimit: siteUrl no proporcionado');
+    return { success: false, error: 'siteUrl es obligatorio' };
+  }
+
+  // Normalizar URL (quitar trailing slash)
+  const baseUrl = siteUrl.replace(/\/+$/, '');
+
+  try {
+    // 1. Obtener bibliotecas de documentos (BaseTemplate 101 = Document Library)
+    const { data: listsData } = await spoTenantGet(
+      `${baseUrl}/_api/web/lists?$filter=BaseTemplate eq 101&$select=Id,Title,BaseTemplate,ItemCount`
+    );
+
+    const lists = listsData?.value || [];
+    if (!lists.length) {
+      logger.warn('configureVersionLimit: No se encontraron document libraries', { siteUrl });
+      return { success: false, error: 'No document libraries found' };
+    }
+
+    // Tomar la primera document library (normalmente "Documents" / "Documentos")
+    const docLib = lists[0];
+    const listGuid = docLib.Id;
+
+    logger.debug('Document library encontrada', {
+      siteUrl, listId: listGuid, title: docLib.Title, itemCount: docLib.ItemCount
+    });
+
+    // 2. Actualizar MajorVersionLimit via SP REST API (MERGE)
+    await spoTenantMerge(
+      `${baseUrl}/_api/web/lists(guid'${listGuid}')`,
+      {
+        __metadata: { type: 'SP.List' },
+        EnableVersioning: true,
+        MajorVersionLimit: versionLimit
+      }
+    );
+
+    logger.info('Límite de versiones configurado correctamente', {
+      siteUrl, listId: listGuid, library: docLib.Title, versionLimit
+    });
+
+    return { success: true, listId: listGuid, library: docLib.Title, versionLimit };
+  } catch (e) {
+    const detail =
+      e?.response?.data?.error?.message?.value ||
+      e?.response?.data?.error?.message ||
+      e?.response?.data?.['odata.error']?.message?.value ||
+      e?.message || 'unknown';
+    logger.warn('Error configurando límite de versiones', {
+      siteUrl, error: detail, status: e?.response?.status
+    });
+    return { success: false, error: detail };
+  }
+}
+
 // ------------------------ creación de sitio ------------------------
 async function createSite({
   type = 'CommunicationSite',
@@ -1000,5 +1073,6 @@ module.exports = {
   createSite,
   assignMembersToSite,
   getSiteMembers,
-  removeMembersFromSite
+  removeMembersFromSite,
+  configureVersionLimit
 };

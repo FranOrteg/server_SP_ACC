@@ -52,5 +52,24 @@ async function spoTenantPost(absUrl, body, extraHeaders = {}) {
   });
 }
 
-module.exports = { spoTenantGet, spoTenantPost };
+/**
+ * MERGE (update) vía SharePoint REST API.
+ * SP no soporta PATCH nativo; usa POST + X-HTTP-Method: MERGE.
+ */
+async function spoTenantMerge(absUrl, body, extraHeaders = {}) {
+  const token = await getSpoTenantToken();
+  return axios.post(absUrl, body, {
+    timeout: 20000,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json;odata=nometadata',
+      'Content-Type': 'application/json;odata=verbose',
+      'X-HTTP-Method': 'MERGE',
+      'IF-MATCH': '*',
+      ...extraHeaders
+    }
+  });
+}
+
+module.exports = { spoTenantGet, spoTenantPost, spoTenantMerge };
 

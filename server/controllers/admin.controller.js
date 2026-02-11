@@ -436,6 +436,18 @@ async function createSpSite(req, res, next) {
       siteId: created.siteId, siteUrl: created.siteUrl
     });
 
+    // Configurar límite de versiones de la biblioteca Documents (5 en vez de 500)
+    try {
+      const versionResult = await spAdmin.configureVersionLimit(created.siteUrl, 5);
+      if (versionResult.success) {
+        logger.mk('SP-CTRL').info('Límite de versiones configurado', versionResult);
+      } else {
+        logger.mk('SP-CTRL').warn('No se pudo configurar límite de versiones', versionResult);
+      }
+    } catch (vErr) {
+      logger.mk('SP-CTRL').warn('Error configurando versiones (no crítico)', { error: vErr.message });
+    }
+
     const applied = await spAdmin.applyTemplateToSite({
       siteId: created.siteId,
       siteUrl: created.siteUrl,
@@ -612,6 +624,18 @@ async function createTwin(req, res, next) {
       url: sp.url,
       description: sp.description
     });
+
+    // === SP: configurar límite de versiones (5 en vez de 500)
+    try {
+      const versionResult = await spAdmin.configureVersionLimit(spCreated.siteUrl, 5);
+      if (versionResult.success) {
+        logger.mk('TWIN-CTRL').info('Límite de versiones configurado', versionResult);
+      } else {
+        logger.mk('TWIN-CTRL').warn('No se pudo configurar límite de versiones', versionResult);
+      }
+    } catch (vErr) {
+      logger.mk('TWIN-CTRL').warn('Error configurando versiones (no crítico)', { error: vErr.message });
+    }
 
     // === SP: aplicar plantilla
     const spApplied = await spAdmin.applyTemplateToSite({
