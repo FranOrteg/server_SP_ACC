@@ -1,18 +1,5 @@
 {
   "list": [
-    {
-      "twinId": "PRJ-NUMD03-plan-de-autoproteccion-murcia-6",
-      "acc": {
-        "projectId": "fd07ff9c-9df9-42b1-b10b-39a4a556f2b6",
-        "bim360Url": "https://acc.autodesk.com/docs/files/projects/fd07ff9c-9df9-42b1-b10b-39a4a556f2b6"
-      },
-      "sp": {
-        "siteId": "labitgroup.sharepoint.com,c88f77ea-6ffb-44d1-a0cc-1fe1efec67a4,8038ca86-5b1c-4b98-9e44-3039fb9f22c8"
-      },
-      "templateId": null,
-      "vars": {},
-      "createdAt": "2026-02-05T11:04:22.548Z",
-      "updatedAt": "2026-02-05T11:04:22.548Z"
-    }
+    
   ]
 }
