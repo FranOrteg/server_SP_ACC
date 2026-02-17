@@ -1,5 +1,18 @@
 {
   "list": [
-    
+    {
+      "twinId": "PRJ-CIMD01-av-de-babiera-3",
+      "acc": {
+        "projectId": "175d0f37-93a6-47e6-83b2-d2eb71c33da8",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/175d0f37-93a6-47e6-83b2-d2eb71c33da8"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,4b1d6e64-33ad-4ace-8cda-953649cbe4f0,b3e5b6e9-4d80-4f90-bae0-b5a1644bb9d7"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-02-17T09:53:18.174Z",
+      "updatedAt": "2026-02-17T09:53:18.174Z"
+    }
   ]
 }
