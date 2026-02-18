@@ -4,6 +4,7 @@ const path = require('path');
 const acc = require('./acc.service');
 const sp = require('./sharepoint.service');
 const { graphGet } = require('../clients/graphClient');
+const { apsGet } = require('../clients/apsClient');
 const db = require('../config/mysql');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -20,18 +21,21 @@ async function saveLink({ twinId, projectId, siteId, templateId, vars, bim360Url
   const store = load();
   const now = new Date().toISOString();
   const computedUrl = bim360Url || `https://acc.autodesk.com/docs/files/projects/${projectId}`;
-  const rec = { 
-    twinId, 
-    acc: { 
+  
+  const rec = {
+    twinId,
+    acc: {
       projectId,
+      hubId: hubId || accountId || null,
       bim360Url: computedUrl
-    }, 
-    sp: { siteId }, 
-    templateId, 
-    vars, 
-    createdAt: now, 
-    updatedAt: now 
+    },
+    sp: { siteId },
+    templateId,
+    vars,
+    createdAt: now,
+    updatedAt: now
   };
+  
   const i = store.list.findIndex(x => x.twinId === twinId);
   if (i >= 0) store.list[i] = { ...store.list[i], ...rec, updatedAt: now }; else store.list.push(rec);
   save(store);
@@ -46,17 +50,17 @@ async function getStatus(twinId) {
   // Intentar obtener URLs reales desde MySQL (Skylab DB)
   let bim360UrlFromDB = null;
   let webUrlFromDB = null;
-  
+
   try {
     // Extraer código del proyecto desde twinId (ej: "PRJ-FRMD01-test" -> "FRMD01")
     const labitCode = twinId.replace(/^PRJ-/, '').replace(/-test.*$/, '').replace(/-.*$/, '');
-    
+
     if (labitCode && db.query) {
       const rows = await db.query(
         'SELECT bim360Url, sharepointUrl FROM projects WHERE FolderLabitCode = ? LIMIT 1',
         [labitCode]
       );
-      
+
       if (rows && rows.length > 0) {
         bim360UrlFromDB = rows[0].bim360Url || null;
         webUrlFromDB = rows[0].sharepointUrl || null;
@@ -70,11 +74,14 @@ async function getStatus(twinId) {
   // ACC
   let accOk = false, accName = null, accErr = null;
   try {
-    const info = await acc.getProjectInfo(tw.acc.projectId);
-    accOk = !!info;
-    accName = info?.data?.attributes?.name || null;
+    const hubId = tw.acc.hubId || 'b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825';  // Default hub
+    const projectId = tw.acc.projectId;
+    
+    const { data } = await apsGet(`/project/v1/hubs/${hubId}/projects/${projectId}`);
+    accOk = !!data;
+    accName = data?.attributes?.name || data?.name || null;
   } catch (e) {
-    accErr = e?.response?.status || e.message;
+    accErr = e?.response?.data?.detail || e?.response?.status || e.message;
   }
 
   // SP
@@ -91,24 +98,24 @@ async function getStatus(twinId) {
   }
 
   // Prioridad de URLs: MySQL DB > Twin storage > Generated
-  const finalBim360Url = bim360UrlFromDB 
-    || tw.acc?.bim360Url 
+  const finalBim360Url = bim360UrlFromDB
+    || tw.acc?.bim360Url
     || `https://acc.autodesk.com/docs/files/projects/${tw.acc.projectId}`;
-  
+
   const finalWebUrl = webUrlFromDB || webUrl;
 
   const status = (accOk && spOk) ? 'green' : ((accOk || spOk) ? 'amber' : 'red');
   return {
     twinId,
     status,
-    acc: { 
-      ok: accOk, 
-      projectId: tw.acc.projectId, 
-      name: accName, 
+    acc: {
+      ok: accOk,
+      projectId: tw.acc.projectId,
+      name: accName,
       bim360Url: finalBim360Url,
-      error: accErr || null 
+      error: accErr || null
     },
-    sp:  { ok: spOk, siteId: tw.sp.siteId, displayName: spName, webUrl: finalWebUrl, error: spErr || null },
+    sp: { ok: spOk, siteId: tw.sp.siteId, displayName: spName, webUrl: finalWebUrl, error: spErr || null },
     templateId: tw.templateId || null,
     vars: tw.vars || {}
   };

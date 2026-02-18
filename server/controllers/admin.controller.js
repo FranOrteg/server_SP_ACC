@@ -187,7 +187,7 @@ async function applyTwin(req, res, next) {
     const { 
       projectId, accountId, hubId, siteId, siteUrl, 
       templateId, vars = {}, twinId,
-      applyTemplates = false  // ⚠️ NUEVO: Por defecto solo vincula, no aplica plantillas
+      applyTemplates = false  
     } = req.body || {};
     
     if (!projectId || !(siteId || siteUrl)) {
@@ -232,9 +232,12 @@ async function applyTwin(req, res, next) {
 
     // Guardar vínculo Twin
     const bim360Url = `https://acc.autodesk.com/docs/files/projects/${projectId}`;
+    const finalHubId = normalizeAccountId(accountId || hubId); 
+
     const link = await twinSvc.saveLink({
       twinId: twinId || `${projectId}__${finalSiteId}`,
       projectId,
+      hubId: finalHubId,
       siteId: finalSiteId,
       templateId: templateId || null,
       vars,
