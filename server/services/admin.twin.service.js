@@ -17,6 +17,12 @@ function ensureStore() {
 function load() { ensureStore(); return JSON.parse(fs.readFileSync(FILE, 'utf8')); }
 function save(store) { fs.writeFileSync(FILE, JSON.stringify(store, null, 2)); }
 
+/* Asegura que el Id lleva el prefijo 'b.' */
+function ensureB(id) {
+  if (!id) return id;
+  return id.startsWith('b.') ? id : `b.${id}`;
+}
+
 async function saveLink({ twinId, projectId, siteId, templateId, vars, bim360Url }) {
   const store = load();
   const now = new Date().toISOString();
@@ -68,20 +74,27 @@ async function getStatus(twinId) {
     }
   } catch (e) {
     // Silenciar errores de MySQL, usaremos URLs generadas como fallback
-    console.debug('[getStatus] MySQL lookup falló (usando fallback):', e.message);
+    // No loguear en produccion para evitar span en logs
   }
 
   // ACC
   let accOk = false, accName = null, accErr = null;
   try {
-    const hubId = tw.acc.hubId || 'b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825';  // Default hub
-    const projectId = tw.acc.projectId;
+    // Obtener hubId guardado o usar el default
+    const rawHubId = tw.acc.hubId || 'b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825';
+    const hubId = ensureB(rawHubId);
+    
+    // ✅ CORREGIDO: projectId DEBE llevar prefijo 'b.' para la API Data Management
+    const projectId = ensureB(tw.acc.projectId);
     
     const { data } = await apiGet(`/project/v1/hubs/${hubId}/projects/${projectId}`);
     accOk = !!data;
-    accName = data?.attributes?.name || data?.name || null;
+    accName = data?.data?.attributes?.name || data?.attributes?.name || null;
   } catch (e) {
-    accErr = e?.response?.data?.detail || e?.response?.status || e.message;
+    accErr = e?.response?.data?.errors?.[0]?.detail 
+          || e?.response?.data?.detail 
+          || e?.response?.status 
+          || e.message;
   }
 
   // SP
