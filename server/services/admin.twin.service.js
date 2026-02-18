@@ -4,7 +4,7 @@ const path = require('path');
 const acc = require('./acc.service');
 const sp = require('./sharepoint.service');
 const { graphGet } = require('../clients/graphClient');
-const { apsGet } = require('../clients/apsClient');
+const { apiGet } = require('../clients/apsClient');
 const db = require('../config/mysql');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -77,7 +77,7 @@ async function getStatus(twinId) {
     const hubId = tw.acc.hubId || 'b.1bb899d4-8dd4-42d8-aefd-6c0e35acd825';  // Default hub
     const projectId = tw.acc.projectId;
     
-    const { data } = await apsGet(`/project/v1/hubs/${hubId}/projects/${projectId}`);
+    const { data } = await apiGet(`/project/v1/hubs/${hubId}/projects/${projectId}`);
     accOk = !!data;
     accName = data?.attributes?.name || data?.name || null;
   } catch (e) {
