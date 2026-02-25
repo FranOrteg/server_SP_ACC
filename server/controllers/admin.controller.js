@@ -1057,6 +1057,7 @@ async function archiveAccProject(req, res, next) {
         success: false,
         archived: result.archived,
         permissions: result.permissions,
+        adminDemotion: result.adminDemotion,
         errors: result.errors
       });
     }
@@ -1064,13 +1065,16 @@ async function archiveAccProject(req, res, next) {
     logger.mk('ADMIN-CTRL').info('✅ Proyecto archivado correctamente:', {
       projectId,
       newName: result.archived?.newName,
-      membersModified: result.permissions?.membersModified
+      membersModified: result.permissions?.membersModified,
+      adminsDemoted: result.adminDemotion?.adminsDemoted,
+      adminsProtected: result.adminDemotion?.adminsProtected
     });
 
     res.json({
       success: true,
       archived: result.archived,
-      permissions: result.permissions
+      permissions: result.permissions,
+      adminDemotion: result.adminDemotion
     });
   } catch (e) {
     const { status, detail } = mapError(e, 'archive_project_failed');

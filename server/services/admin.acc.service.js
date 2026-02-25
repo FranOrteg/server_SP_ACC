@@ -556,6 +556,9 @@ async function getProjectUsers(projectId, { limit = 100, offset = 0 } = {}) {
 /**
  * Actualiza el acceso a productos de un usuario en un proyecto ACC.
  * PATCH /construction/admin/v1/projects/:projectId/users/:userId
+ *
+ * NOTA: PATCH cambia productos pero NO puede cambiar el rol de proyecto
+ * (Project Admin → Member). Para eso se necesita DELETE + POST.
  */
 async function updateProjectUserAccess(projectId, userId, { products }) {
   if (!projectId || !userId) {
@@ -569,13 +572,95 @@ async function updateProjectUserAccess(projectId, userId, { products }) {
 
   try {
     const result = await apsUser.apiPatch(url, payload);
+    log.info('[updateProjectUserAccess] Respuesta API:', JSON.stringify(result));
     log.debug('[updateProjectUserAccess] Usuario actualizado:', { userId, products });
-    return { ok: true, userId, products };
+    return { ok: true, userId, products, result };
   } catch (e) {
     const status = e?.response?.status;
     const detail = e?.response?.data?.errors?.[0]?.detail || e?.response?.data?.message || e?.message || 'update_failed';
-    log.warn('[updateProjectUserAccess] Error:', { userId, status, detail });
+    log.warn('[updateProjectUserAccess] Error:', { userId, status, detail, body: JSON.stringify(e?.response?.data) });
     return { ok: false, userId, error: detail, status };
+  }
+}
+
+// ------------------ Eliminar y re-añadir usuario (cambia ROL) ------------------
+
+/**
+ * Elimina un usuario del proyecto y lo re-añade con los productos deseados.
+ * Esto es NECESARIO porque:
+ *   - PATCH /users/:id → cambia productos pero NO el rol (Project Admin → Member)
+ *   - POST /users → devuelve 409 si el usuario ya existe
+ * La única forma de cambiar el rol es DELETE + POST.
+ *
+ * Pasos:
+ *   1. DELETE /construction/admin/v1/projects/:projectId/users/:userId
+ *   2. POST   /construction/admin/v1/projects/:projectId/users  { email, products }
+ *
+ * Si el DELETE falla, se hace fallback a PATCH (al menos los productos se actualizan).
+ * Si el POST falla tras un DELETE exitoso, se intenta re-añadir con productos originales.
+ */
+async function removeAndReaddUser(projectId, userId, email, newProducts, originalProducts) {
+  if (!projectId || !userId || !email) {
+    throw new Error('removeAndReaddUser: projectId, userId y email son obligatorios');
+  }
+
+  const projectIdNorm = String(projectId).replace(/^b\./, '');
+  const deleteUrl = `/construction/admin/v1/projects/${encodeURIComponent(projectIdNorm)}/users/${encodeURIComponent(userId)}`;
+  const postUrl = `/construction/admin/v1/projects/${encodeURIComponent(projectIdNorm)}/users`;
+
+  // Solo productos con acceso real
+  const activeProducts = newProducts.filter(p => p.access && p.access !== 'none');
+
+  // Paso 1: DELETE
+  log.info('[removeAndReaddUser] Paso 1: DELETE', deleteUrl);
+  try {
+    await apsUser.apiDelete(deleteUrl);
+    log.info('[removeAndReaddUser] Usuario eliminado del proyecto:', email);
+  } catch (delErr) {
+    const delStatus = delErr?.response?.status;
+    const delDetail = delErr?.response?.data?.detail || delErr?.message;
+    log.warn('[removeAndReaddUser] DELETE falló:', { status: delStatus, detail: delDetail });
+
+    // Fallback: usar PATCH (al menos actualiza productos aunque no el rol)
+    log.info('[removeAndReaddUser] Fallback → PATCH para actualizar productos');
+    try {
+      const patchResult = await apsUser.apiPatch(
+        `/construction/admin/v1/projects/${encodeURIComponent(projectIdNorm)}/users/${encodeURIComponent(userId)}`,
+        { products: activeProducts }
+      );
+      log.info('[removeAndReaddUser] PATCH fallback OK:', JSON.stringify(patchResult));
+      return { ok: true, via: 'patch-fallback', result: patchResult, roleChanged: false };
+    } catch (patchErr) {
+      const patchDetail = patchErr?.response?.data?.detail || patchErr?.message;
+      log.error('[removeAndReaddUser] PATCH fallback también falló:', patchDetail);
+      return { ok: false, error: `DELETE: ${delDetail}; PATCH: ${patchDetail}`, status: delStatus };
+    }
+  }
+
+  // Paso 2: POST (re-añadir como Member sin projectAdministration)
+  const payload = { email, products: activeProducts };
+  log.info('[removeAndReaddUser] Paso 2: POST', postUrl, '→', JSON.stringify(payload));
+  try {
+    const result = await apsUser.apiPost(postUrl, payload);
+    log.info('[removeAndReaddUser] Usuario re-añadido como Member:', JSON.stringify(result));
+    return { ok: true, via: 'delete-and-readd', result, roleChanged: true };
+  } catch (postErr) {
+    const postStatus = postErr?.response?.status;
+    const postData = postErr?.response?.data;
+    const postDetail = postData?.detail || postData?.message || postErr?.message;
+    log.error('[removeAndReaddUser] POST re-add falló:', { status: postStatus, detail: postDetail });
+
+    // Intento de emergencia: re-añadir con productos originales para no dejar al usuario sin acceso
+    log.warn('[removeAndReaddUser] Intento de emergencia: re-añadir con productos originales');
+    try {
+      const origProds = (originalProducts || []).filter(p => p.access && p.access !== 'none');
+      await apsUser.apiPost(postUrl, { email, products: origProds.length > 0 ? origProds : activeProducts });
+      log.info('[removeAndReaddUser] Re-añadido con productos originales (rol NO cambiado)');
+      return { ok: false, error: `Re-add falló: ${postDetail}. Usuario restaurado con productos originales.`, via: 'emergency-restore', roleChanged: false };
+    } catch (emergErr) {
+      log.error('[removeAndReaddUser] ⚠️ EMERGENCIA: usuario', email, 'eliminado pero no se pudo re-añadir:', emergErr?.message);
+      return { ok: false, error: `Usuario eliminado pero no re-añadido: ${postDetail}`, status: postStatus, critical: true };
+    }
   }
 }
 
@@ -584,27 +669,47 @@ async function updateProjectUserAccess(projectId, userId, { products }) {
 /**
  * Archiva un proyecto ACC:
  * 1. Renombra el proyecto con un prefijo (ej: "Closed_")
- * 2. Restringe los permisos de todos los miembros a solo "docs"
+ * 2. Obtiene la lista de usuarios del proyecto (una sola vez)
+ * 3. Restringe los permisos de productos (quita designCollaboration, modelCoordination, etc.)
+ * 4. Degrada administradores de proyecto a miembros (excepto protectedAdminEmails)
+ *
+ * IMPORTANTE: Para la degradación de admins se usa DELETE + POST (eliminar y
+ * re-añadir) porque PATCH solo cambia productos pero NO el rol de proyecto,
+ * y POST /users devuelve 409 si el usuario ya existe.
  */
 async function archiveProject({
   hubId,
   projectId,
   options = {}
 }) {
+  // Emails de Project Managers que NUNCA deben ser degradados
+  const DEFAULT_PROTECTED_EMAILS = [
+    'support@labit.es',
+    'lsierra@labit.es',
+    'jrsevilla@labit.es',
+    'jlago@labit.es',
+  ];
+
   const {
     renamePrefix = 'Closed_',
     restrictToDocsOnly = true,
-    removeFromProducts = ['designCollaboration', 'modelCoordination', 'projectManagement', 'costManagement', 'fieldManagement']
+    removeFromProducts = ['designCollaboration', 'modelCoordination', 'projectManagement', 'costManagement', 'fieldManagement'],
+    demoteAdmins = true,
+    protectedAdminEmails = DEFAULT_PROTECTED_EMAILS
   } = options;
 
   if (!hubId || !projectId) {
     throw new Error('archiveProject: hubId y projectId son obligatorios');
   }
 
+  // Normalizar emails protegidos a lowercase para comparacion segura
+  const protectedEmails = (protectedAdminEmails || []).map(e => String(e).toLowerCase().trim());
+
   const result = {
     success: true,
     archived: null,
     permissions: null,
+    adminDemotion: null,
     errors: []
   };
 
@@ -616,12 +721,10 @@ async function archiveProject({
   let newName = null;
 
   try {
-    // Obtener info del proyecto usando Construction Admin API
     const projectUrl = `/construction/admin/v1/projects/${encodeURIComponent(projectIdClean)}`;
     const projectData = await apsUser.apiGet(projectUrl);
     previousName = projectData?.name || 'Unknown';
 
-    // Solo renombrar si no tiene ya el prefijo
     if (!previousName.startsWith(renamePrefix)) {
       newName = `${renamePrefix}${previousName}`;
       const renameResult = await renameProject({ hubId: hubIdNorm, projectId: projectIdClean, newName });
@@ -644,19 +747,23 @@ async function archiveProject({
     }
   } catch (e) {
     result.success = false;
-    result.errors.push({
-      phase: 'rename',
-      error: e.message,
-      code: e.code || 'RENAME_FAILED'
-    });
+    result.errors.push({ phase: 'rename', error: e.message, code: e.code || 'RENAME_FAILED' });
     log.error('[archiveProject] Error en renombrado:', e.message);
   }
 
-  // 2. Restringir permisos si se solicita
-  if (restrictToDocsOnly) {
-    try {
-      const users = await getProjectUsers(projectIdClean);
+  // 2. Obtener usuarios una sola vez para ambas fases (permisos + degradación)
+  let users = [];
+  try {
+    users = await getProjectUsers(projectIdClean);
+  } catch (e) {
+    result.success = false;
+    result.errors.push({ phase: 'fetch_users', error: e.message, code: 'FETCH_USERS_FAILED' });
+    log.error('[archiveProject] Error obteniendo usuarios:', e.message);
+  }
 
+  // 3. Restringir productos + degradar admins en UNA SOLA pasada por usuario
+  if (users.length > 0 && (restrictToDocsOnly || demoteAdmins)) {
+    try {
       const permissionResult = {
         totalMembers: users.length,
         membersModified: 0,
@@ -664,41 +771,101 @@ async function archiveProject({
         details: []
       };
 
+      const demotionResult = {
+        totalAdmins: 0,
+        adminsDemoted: 0,
+        adminsProtected: 0,
+        adminsFailed: 0,
+        details: []
+      };
+
       for (const user of users) {
         const userId = user.id;
-        const email = user.email || '';
+        const email = (user.email || '').toLowerCase().trim();
         const name = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
-        
-        // Obtener productos actuales del usuario
         const currentProducts = user.products || [];
+
+        // --- Determinar si es admin y si está protegido ---
+        const adminViaProducts = currentProducts.some(
+          p => (p.key || p) === 'projectAdministration' && (p.access === 'administrator')
+        );
+        const adminViaAccessLevels = user.accessLevels?.projectAdmin === true;
+        const isAdmin = adminViaProducts || adminViaAccessLevels;
+        const isProtected = protectedEmails.includes(email);
+        const shouldDemote = demoteAdmins && isAdmin && !isProtected;
+
+        log.debug('[archiveProject] Usuario:', email,
+          '| isAdmin:', isAdmin,
+          '(viaProducts:', adminViaProducts, ', viaAccessLevels:', adminViaAccessLevels, ')',
+          '| shouldDemote:', shouldDemote);
+
+        if (isAdmin) demotionResult.totalAdmins++;
+
+        // --- Construir array final de productos ---
         const productsToRemove = [];
         const productsToKeep = [];
         const newProducts = [];
 
         for (const prod of currentProducts) {
           const prodKey = prod.key || prod;
-          if (removeFromProducts.includes(prodKey)) {
+
+          if (prodKey === 'projectAdministration') {
+            if (shouldDemote) {
+              productsToRemove.push(prodKey);
+              // OMITIR de newProducts → al re-añadir sin este producto, queda como Member
+            } else {
+              productsToKeep.push(prodKey);
+              newProducts.push({ key: prodKey, access: prod.access || 'administrator' });
+            }
+          } else if (restrictToDocsOnly && removeFromProducts.includes(prodKey)) {
             productsToRemove.push(prodKey);
+            // OMITIR de newProducts → el PATCH full-replace los elimina
           } else {
             productsToKeep.push(prodKey);
-            // Mantener el producto con su acceso actual
-            newProducts.push({
-              key: prodKey,
-              access: prod.access || 'member'
-            });
+            newProducts.push({ key: prodKey, access: prod.access || 'member' });
           }
         }
 
-        // Si hay productos a remover, actualizar
-        if (productsToRemove.length > 0) {
-          const updateResult = await updateProjectUserAccess(projectIdClean, userId, {
-            products: newProducts
+        // Admin detectado via accessLevels pero no en products
+        if (shouldDemote && !productsToRemove.includes('projectAdministration')) {
+          productsToRemove.push('projectAdministration');
+        }
+
+        // --- Registrar admin protegido ---
+        if (isAdmin && isProtected) {
+          demotionResult.adminsProtected++;
+          demotionResult.details.push({
+            userId, email, name,
+            status: 'protected',
+            reason: 'Project Manager protegido'
           });
+          log.debug('[archiveProject] Admin protegido, no se degrada:', email);
+        }
+
+        // --- Aplicar cambios ---
+        const activeProducts = newProducts.filter(p => p.access && p.access !== 'none');
+        log.info('[archiveProject]', shouldDemote ? 'DELETE+POST (demotar)' : 'PATCH', 'para', email,
+          '→ activeProducts:', JSON.stringify(activeProducts));
+
+        if (productsToRemove.length > 0) {
+          let updateResult;
+
+          if (shouldDemote) {
+            // DELETE + POST: única forma de cambiar el rol de proyecto
+            updateResult = await removeAndReaddUser(
+              projectIdClean, userId, email,
+              activeProducts,
+              currentProducts
+            );
+          } else {
+            // PATCH: funciona bien para cambios de productos sin democión
+            updateResult = await updateProjectUserAccess(projectIdClean, userId, {
+              products: activeProducts
+            });
+          }
 
           permissionResult.details.push({
-            userId,
-            email,
-            name,
+            userId, email, name,
             status: updateResult.ok ? 'modified' : 'failed',
             productsRemoved: productsToRemove,
             productsKept: productsToKeep,
@@ -710,30 +877,60 @@ async function archiveProject({
           } else {
             permissionResult.membersSkipped++;
           }
+
+          // Registro de degradación
+          if (shouldDemote) {
+            if (updateResult.ok) {
+              demotionResult.adminsDemoted++;
+              demotionResult.details.push({
+                userId, email, name,
+                status: 'demoted',
+                previousRole: 'project_admin',
+                newRole: 'project_member'
+              });
+              log.info('[archiveProject] Admin degradado a miembro:', email);
+            } else {
+              demotionResult.adminsFailed++;
+              demotionResult.details.push({
+                userId, email, name,
+                status: 'failed',
+                error: updateResult.error
+              });
+              log.warn('[archiveProject] Fallo al degradar admin:', email, updateResult.error);
+            }
+          }
         } else {
-          // Usuario sin productos a remover
           permissionResult.membersSkipped++;
           permissionResult.details.push({
-            userId,
-            email,
-            name,
+            userId, email, name,
             status: 'skipped',
             productsRemoved: [],
             productsKept: productsToKeep,
-            reason: 'No products to remove'
+            reason: 'No changes needed'
           });
         }
       }
 
       result.permissions = permissionResult;
+      result.adminDemotion = demotionResult;
+
+      log.info('[archiveProject] Permisos y degradación completados:', {
+        membersModified: permissionResult.membersModified,
+        membersSkipped: permissionResult.membersSkipped,
+        totalAdmins: demotionResult.totalAdmins,
+        demoted: demotionResult.adminsDemoted,
+        protected: demotionResult.adminsProtected,
+        failed: demotionResult.adminsFailed
+      });
+
     } catch (e) {
       result.success = false;
       result.errors.push({
-        phase: 'permissions',
+        phase: 'permissions_and_demotion',
         error: e.message,
-        code: 'PERMISSIONS_UPDATE_FAILED'
+        code: 'PERMISSIONS_DEMOTION_FAILED'
       });
-      log.error('[archiveProject] Error actualizando permisos:', e.message);
+      log.error('[archiveProject] Error en permisos/degradación:', e.message);
     }
   }
 
@@ -750,5 +947,6 @@ module.exports = {
   renameProject,
   getProjectUsers,
   updateProjectUserAccess,
+  removeAndReaddUser,
   archiveProject
 };

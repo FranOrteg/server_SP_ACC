@@ -208,8 +208,26 @@ async function apiPatch(url, body, config = {}) {
   }
 }
 
+async function apiDelete(url, config = {}) {
+  const access = await refreshIfNeeded();
+  const path = url.startsWith('http') ? url : `${APS_BASE}${url}`;
+  const started = Date.now();
+  try {
+    const { data, status } = await axios.delete(path, {
+      timeout: 10000,
+      ...config,
+      headers: { ...(config.headers || {}), Authorization: `Bearer ${access}` }
+    });
+    logHttpSuccess('delete', url, status, started, config.meta);
+    return data;
+  } catch (err) {
+    logHttpError('delete', url, err, started, config.meta);
+    throw err;
+  }
+}
+
 // Helpers para router OAuth
 function hasUserToken() { return !!userToken?.access_token; }
 function clearUserToken() { userToken = null; }
 
-module.exports = { exchangeCodeForToken, apiGet, apiPost, apiPatch, hasUserToken, clearUserToken, peekToken };
+module.exports = { exchangeCodeForToken, apiGet, apiPost, apiPatch, apiDelete, hasUserToken, clearUserToken, peekToken };
