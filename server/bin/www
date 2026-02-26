@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-require('dotenv').config();
+
+// Carga .env.development o .env.production según entorno NODE_ENV
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
+
+require('dotenv').config({ path: envFile });
+
+console.log(`🔧 Entorno: ${process.env.NODE_ENV} → cargando ${envFile}`);
 
 /**
  * Module dependencies.
