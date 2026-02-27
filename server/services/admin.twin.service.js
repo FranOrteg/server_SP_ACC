@@ -23,7 +23,7 @@ function ensureB(id) {
   return id.startsWith('b.') ? id : `b.${id}`;
 }
 
-async function saveLink({ twinId, projectId, siteId, templateId, vars, bim360Url }) {
+async function saveLink({ twinId, projectId, hubId, siteId, templateId, vars, bim360Url }) {
   const store = load();
   const now = new Date().toISOString();
   const computedUrl = bim360Url || `https://acc.autodesk.com/docs/files/projects/${projectId}`;
@@ -32,7 +32,7 @@ async function saveLink({ twinId, projectId, siteId, templateId, vars, bim360Url
     twinId,
     acc: {
       projectId,
-      hubId: hubId || accountId || null,
+      hubId: hubId || null,
       bim360Url: computedUrl
     },
     sp: { siteId },
