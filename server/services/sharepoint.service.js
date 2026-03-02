@@ -39,15 +39,56 @@ async function getRootSite() {
 
 async function findSites(q, preferHostname) {
   if (!q || q.length < 2) throw new Error('q debe tener al menos 2 caracteres');
-  const { data } = await graphGet(`/sites?search=${encodeURIComponent(q)}&$select=id,webUrl,displayName`);
-  let list = data.value || [];
-  if (preferHostname) {
-    list = list.filter(s => {
+  const needle = String(q).trim();
+
+  // Helper: filtra por hostname si se proporciona
+  const filterByHost = (list) => {
+    if (!preferHostname) return list;
+    return list.filter(s => {
       try { return new URL(s.webUrl).hostname.includes(preferHostname); }
       catch { return false; }
     });
+  };
+
+  // ── Estrategia 1: Graph /sites?search= ─────────────────────────────────────
+  try {
+    const { data } = await graphGet(`/sites?search=${encodeURIComponent(needle)}&$select=id,webUrl,displayName`);
+    const list = filterByHost(data?.value || []);
+    if (list.length > 0) return list;
+  } catch (e) {
+    console.warn(`[findSites] Graph /sites?search= falló:`, e.message);
   }
-  return list;
+
+  // ── Estrategia 2: SPO Search REST API ──────────────────────────────────────
+  try {
+    const { spoTenantGet } = require('../clients/spoTenantClient');
+    const tenantHost = process.env.SPO_TENANT_HOST;
+    const qt = `contentclass:STS_Site AND Title:${needle}*`;
+    const searchUrl =
+      `https://${tenantHost}/_api/search/query` +
+      `?querytext=${encodeURIComponent("'" + qt + "'")}` +
+      `&selectproperties=${encodeURIComponent("'Title,Path,SiteId'")}` +
+      `&trimduplicates=false&rowlimit=50`;
+    const { data } = await spoTenantGet(searchUrl);
+    const list = filterByHost(parseSearchRows(data) || []);
+    if (list.length > 0) return list;
+  } catch (e) {
+    console.warn(`[findSites] SPO Search API falló:`, e.message);
+  }
+
+  // ── Estrategia 3: Filtrado local sobre listAllSites ─────────────────────────
+  try {
+    const allSites = await listAllSites({ preferHostname, limit: 500 });
+    const lowerNeedle = needle.toLowerCase();
+    return allSites.filter(s =>
+      s.displayName?.toLowerCase().includes(lowerNeedle) ||
+      s.webUrl?.toLowerCase().includes(lowerNeedle)
+    );
+  } catch (e) {
+    console.warn(`[findSites] Fallback listAllSites falló:`, e.message);
+  }
+
+  return [];
 }
 
 // === helpers (puedes pegarlos junto a otros helpers) ===
