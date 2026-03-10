@@ -239,11 +239,22 @@ function createProgressEmitter(res, sessionId) {
 function setupSSE(req, res) {
   const sessionId = crypto.randomUUID();
   
+  // ── Desactivar TODOS los timeouts para esta conexión SSE ──
+  // Sin esto, Node.js (requestTimeout=300s) o nginx (proxy_read_timeout=60s)
+  // cortan la conexión durante migraciones largas → "Failed to fetch" en el front
+  req.setTimeout(0);
+  res.setTimeout(0);
+  if (req.socket) {
+    req.socket.setTimeout(0);
+    req.socket.setKeepAlive(true, 30000); // TCP keepalive cada 30s
+  }
+
   // Headers SSE
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Para nginx
+  res.setHeader('X-Accel-Buffering', 'no');       // nginx: no buffering
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Session-Id', sessionId);
   res.flushHeaders();
 
@@ -306,18 +317,25 @@ function setupSSE(req, res) {
     }
   });
 
-  // Keep-alive ping cada 30 segundos
+  // ── Heartbeat cada 15s para mantener viva la conexión en Lightsail ──
+  // AWS Lightsail Load Balancer tiene un idle timeout FIJO de 60s que NO se puede cambiar.
+  // Si no fluyen datos en 60s, Lightsail corta la conexión → "Failed to fetch" en el front.
+  // Enviamos un EVENTO REAL (no solo comentario) cada 15s para que el LB lo cuente como tráfico.
+  const HEARTBEAT_INTERVAL_MS = 15_000; // 15s (bien dentro del margen de 60s de Lightsail)
   const keepAlive = setInterval(() => {
-    if (!activeSessions.has(sessionId)) {
+    const session = activeSessions.get(sessionId);
+    if (!session || session.completed) {
       clearInterval(keepAlive);
       return;
     }
     try {
-      res.write(`:ping\n\n`);
+      // Evento real "heartbeat" con timestamp — los comentarios (:ping) no siempre
+      // reinician el idle timer de los balanceadores de carga.
+      res.write(`event: heartbeat\ndata: ${JSON.stringify({ ts: Date.now(), sessionId })}\n\n`);
     } catch {
       clearInterval(keepAlive);
     }
-  }, 30000);
+  }, HEARTBEAT_INTERVAL_MS);
 
   // Limpiar interval cuando termine
   res.on('finish', () => {

@@ -37,6 +37,14 @@ server.listen(port);
 server.on('error', onError);
 server.on('listening', onListening);
 
+// ── Timeouts para SSE de larga duración (migraciones SP→ACC) ──
+// Node.js >= 18 tiene requestTimeout = 300s por defecto, que corta SSE.
+// Lo deshabilitamos a nivel de servidor; cada ruta SSE también lo hace individualmente.
+server.timeout = 0;                     // 0 = sin timeout de inactividad
+server.requestTimeout = 0;              // 0 = sin timeout de request
+server.headersTimeout = 0;              // 0 = sin timeout de headers
+server.keepAliveTimeout = 120_000;      // 2min keepalive entre requests
+
 /**
  * Normalize a port into a number, string, or false.
  */
