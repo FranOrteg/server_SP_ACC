@@ -384,6 +384,29 @@ function listActiveSessions() {
   return sessions;
 }
 
+// Manejar SIGTERM (PM2 memory restart, etc.) → notificar a todas las sesiones SSE activas
+process.on('SIGTERM', () => {
+  console.warn('[SSE] SIGTERM recibido — notificando sesiones activas antes de morir');
+  activeSessions.forEach((session, id) => {
+    if (!session.completed) {
+      try {
+        const payload = {
+          sessionId: id,
+          status: 'error',
+          error: 'El servidor se está reiniciando (memoria). Reintente la migración.',
+          failedAt: 'server-restart',
+          canRetry: true,
+          partialResult: null,
+          summary: { duration: Date.now() - session.startedAt }
+        };
+        session.res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+      } catch (e) { /* socket ya cerrado */ }
+    }
+  });
+  // Dar 500ms para que los SSE se envíen antes de que PM2 mate el proceso
+  setTimeout(() => process.exit(0), 500);
+});
+
 module.exports = {
   STEPS,
   calculateGlobalProgress,

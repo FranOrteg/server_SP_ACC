@@ -535,7 +535,9 @@ async function spToNewAccProjectStream(req, res) {
     });
 
     // 5) Copiar árbol completo de SP → ACC (con progreso)
+    const MAX_LOG_ENTRIES = 200; // limitar memoria durante migraciones grandes
     const copyLog = [];
+    let logCounter = 0;
     const copyResult = await transfer.copySpTreeToAcc({
       driveId,
       itemId,
@@ -543,7 +545,17 @@ async function spToNewAccProjectStream(req, res) {
       targetFolderId,
       mode,
       dryRun: false,
-      onLog: (m) => copyLog.push(m),
+      onLog: (m) => {
+        copyLog.push(m);
+        // Rotar: mantener solo las últimas N entradas
+        if (copyLog.length > MAX_LOG_ENTRIES) copyLog.shift();
+        // Log de memoria cada 50 archivos
+        logCounter++;
+        if (logCounter % 50 === 0) {
+          const mem = process.memoryUsage();
+          logger.debug(`[MEM] RSS=${(mem.rss / 1024 / 1024).toFixed(1)}MB heap=${(mem.heapUsed / 1024 / 1024).toFixed(1)}MB (files processed: ${logCounter})`);
+        }
+      },
       // Callback de progreso
       onProgress: (progress) => {
         emitter.checkCancellation();
