@@ -547,10 +547,22 @@ async function spToNewAccProjectStream(req, res) {
       // Callback de progreso
       onProgress: (progress) => {
         emitter.checkCancellation();
+
+        let message;
+        if (progress.skipped) {
+          message = `⚠️ Omitido: ${progress.currentFile} (${progress.skipReason}) — ${progress.processedFiles}/${progress.totalFiles}`;
+          emitter.addNonCriticalError(`Omitido: ${progress.currentFile} (${progress.skipReason})`);
+        } else if (progress.error) {
+          message = `❌ Error no crítico: ${progress.currentFile} — ${progress.processedFiles}/${progress.totalFiles}`;
+          emitter.addNonCriticalError(`Error en ${progress.currentFile}: ${progress.errorMessage}`);
+        } else {
+          message = `Subiendo: ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`;
+        }
+
         emitter.progress({
           currentStep: 'uploading',
           stepProgress: progress.stepProgress,
-          message: `Subiendo: ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`,
+          message,
           totalItems: progress.totalFiles,
           processedItems: progress.processedFiles,
           currentItem: progress.currentFile,

@@ -5,6 +5,30 @@ const acc = require('./acc.service');
 const fs = require('fs');
 const path = require('path');
 
+// ── Extensiones bloqueadas por ACC / APS (403 ERR_NOT_ALLOWED) ──
+// Listado basado en las restricciones de Autodesk Data Management.
+// Se puede ampliar fácilmente añadiendo nuevas extensiones.
+const BLOCKED_EXTENSIONS = new Set([
+  '.html', '.htm',
+  '.js',   '.jsx',
+  '.php',  '.asp',  '.aspx',
+  '.exe',  '.bat',  '.cmd',  '.com',  '.msi',
+  '.dll',  '.sys',  '.drv',
+  '.vbs',  '.vbe',  '.wsc',  '.wsf',  '.wsh',
+  '.ps1',  '.ps2',  '.psc1', '.psc2',
+  '.scf',  '.lnk',  '.inf',  '.reg',
+]);
+
+/**
+ * Comprueba si la extensión de un fichero está bloqueada por ACC.
+ * @param {string} fileName
+ * @returns {{ blocked: boolean, ext: string }}
+ */
+function isExtensionBlocked(fileName) {
+  const ext = path.extname(fileName || '').toLowerCase();
+  return { blocked: BLOCKED_EXTENSIONS.has(ext), ext };
+}
+
 // Devuelve un nombre disponible si existe colisión (filename, filename (1).ext, filename (2).ext, …)
 async function nextAvailableName(projectId, folderId, fileName) {
   const ext = path.extname(fileName);
@@ -199,6 +223,22 @@ async function walkFolder(driveId, spFolder, projectId, destFolderId, mode, dryR
           progressCtx.processedFiles++;
           progressCtx.bytesTransferred += child.size || 0;
         }
+        // Notificar al front-end para que la barra de progreso no se quede colgada
+        if (onProgress && progressCtx) {
+          const stepProgress = progressCtx.totalFiles > 0
+            ? Math.round((progressCtx.processedFiles / progressCtx.totalFiles) * 100)
+            : 0;
+          onProgress({
+            totalFiles: progressCtx.totalFiles,
+            processedFiles: progressCtx.processedFiles,
+            currentFile: child.name,
+            bytesTotal: progressCtx.totalBytes,
+            bytesTransferred: progressCtx.bytesTransferred,
+            stepProgress,
+            error: true,
+            errorMessage: e?.response?.data?.errors?.[0]?.detail || String(e?.response?.status || e.message)
+          });
+        }
       }
     }
   }
@@ -219,6 +259,37 @@ async function ensureAccFolder(projectId, parentFolderId, name, dryRun, onLog, s
 async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRun, onLog, summary, progressCtx = null, onProgress = null) {
   let fileName = spItem.name;
   const size = spItem.size || 0;
+
+  // ── Filtro de extensiones bloqueadas por ACC ──
+  const { blocked, ext } = isExtensionBlocked(fileName);
+  if (blocked) {
+    onLog(`⚠️  skip (extensión ${ext} no permitida en ACC): ${fileName}`);
+    summary.skipped++;
+    summary.skippedBlocked = (summary.skippedBlocked || 0) + 1;
+    summary.blockedFiles = summary.blockedFiles || [];
+    summary.blockedFiles.push({ name: fileName, reason: `extension ${ext} blocked by ACC` });
+
+    // Actualizar progreso (sin sumar bytes, el fichero no se transfiere)
+    if (progressCtx) {
+      progressCtx.processedFiles++;
+    }
+    if (onProgress && progressCtx) {
+      const stepProgress = progressCtx.totalFiles > 0
+        ? Math.round((progressCtx.processedFiles / progressCtx.totalFiles) * 100)
+        : 0;
+      onProgress({
+        totalFiles: progressCtx.totalFiles,
+        processedFiles: progressCtx.processedFiles,
+        currentFile: fileName,
+        bytesTotal: progressCtx.totalBytes,
+        bytesTransferred: progressCtx.bytesTransferred,
+        stepProgress,
+        skipped: true,
+        skipReason: `extensión ${ext} no permitida en ACC`
+      });
+    }
+    return;
+  }
 
   // Actualizar progreso: archivo actual
   if (progressCtx) {
