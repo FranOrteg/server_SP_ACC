@@ -8,7 +8,7 @@ const spAdmin = require('../services/admin.sp.service');
 const apsUser = require('../clients/apsUserClient');
 const { graphGet } = require('../clients/graphClient');
 const logger = require('../helpers/logger').mk('BRIDGE');
-const { setupSSE, cancelSession, getSessionInfo, listActiveSessions } = require('../helpers/progressEmitter');
+const { setupSSE, cancelSession, getSessionInfo, listActiveSessions, STEPS_TREE_COPY } = require('../helpers/progressEmitter');
 
 async function spToAcc(req, res, next) {
   try {
@@ -568,7 +568,7 @@ async function spToNewAccProjectStream(req, res) {
           message = `❌ Error no crítico: ${progress.currentFile} — ${progress.processedFiles}/${progress.totalFiles}`;
           emitter.addNonCriticalError(`Error en ${progress.currentFile}: ${progress.errorMessage}`);
         } else if (progress.compressed) {
-          message = `🗜️ Comprimido: ${progress.originalName} → ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`;
+          message = `Zipping: ${progress.originalName} → ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`;
         } else {
           message = `Subiendo: ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`;
         }
@@ -794,6 +794,217 @@ async function spToNewAccProjectStream(req, res) {
   res.end();
 }
 
+// =====================================================
+// STREAMING SSE: sp-tree-to-acc/stream
+// =====================================================
+
+/**
+ * POST /api/bridge/sp-tree-to-acc/stream
+ * Copia recursiva SP → ACC con progreso SSE en tiempo real.
+ * Mismo protocolo de eventos que sp-to-new-acc-project/stream.
+ */
+async function spTreeToAccStream(req, res) {
+  // Configurar SSE con pesos de pasos para tree-copy (reading/creating/copying/verifying)
+  const { sessionId, emitter } = setupSSE(req, res, { stepsMap: STEPS_TREE_COPY });
+
+  logger.info(`[SSE][tree] Iniciando sesión de copia de directorio: ${sessionId}`);
+
+  let partialResult = null;
+  let currentStep = 'reading';
+
+  try {
+    const {
+      driveId,
+      itemId,
+      projectId,
+      folderId,
+      destPath,
+      mode = 'upsert',
+      dryRun: rawDryRun,
+    } = { ...req.query, ...(req.body || {}) };
+    const dryRun = String(rawDryRun || '').toLowerCase() === 'true';
+
+    // 1) Validaciones
+    if (!driveId || !itemId || !projectId || (!folderId && !destPath)) {
+      emitter.error(new Error('driveId, itemId, projectId y (folderId o destPath) son obligatorios'), null, 'reading');
+      res.end();
+      return;
+    }
+
+    // ===== FASE 1: READING =====
+    currentStep = 'reading';
+    emitter.progress({
+      currentStep,
+      stepProgress: 0,
+      message: 'Leyendo estructura de SharePoint…',
+      force: true
+    });
+
+    emitter.checkCancellation();
+
+    // Resolver carpeta destino
+    let targetFolderId = folderId;
+    if (!targetFolderId && destPath) {
+      emitter.progress({ currentStep, stepProgress: 30, message: 'Resolviendo carpeta destino en ACC…' });
+      targetFolderId = await acc.ensureFolderByPath(projectId, destPath);
+    }
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 100,
+      message: 'Estructura leída correctamente'
+    });
+
+    emitter.checkCancellation();
+
+    // ===== FASE 2: CREATING (carpetas – se reporta dentro de onLog) =====
+    currentStep = 'creating';
+    emitter.progress({
+      currentStep,
+      stepProgress: 0,
+      message: 'Preparando estructura de carpetas en ACC…',
+      force: true
+    });
+
+    // ===== FASE 3: COPYING (archivos – se va a manejar vía onProgress) =====
+    // copySpTreeToAcc hace creating + copying en walkFolder, así que
+    // intercalaremos las fases desde los callbacks.
+
+    const MAX_LOG_ENTRIES = 200;
+    const copyLog = [];
+    let logCounter = 0;
+    let inCopyingPhase = false; // para saber cuándo pasar de "creating" a "copying"
+
+    const copyResult = await transfer.copySpTreeToAcc({
+      driveId,
+      itemId,
+      projectId,
+      targetFolderId,
+      mode,
+      dryRun,
+      onLog: (m) => {
+        copyLog.push(m);
+        if (copyLog.length > MAX_LOG_ENTRIES) copyLog.shift();
+        logCounter++;
+
+        // Detectar mensajes de creación de carpetas para emitir progreso "creating"
+        if (!inCopyingPhase && m.startsWith('📁')) {
+          emitter.progress({
+            currentStep: 'creating',
+            stepProgress: 50,
+            message: `Creando carpeta: ${m.replace('📁 ensure folder: ', '').split(' under ')[0]}`
+          });
+        }
+
+        if (logCounter % 50 === 0) {
+          const mem = process.memoryUsage();
+          logger.debug(`[MEM] RSS=${(mem.rss / 1024 / 1024).toFixed(1)}MB heap=${(mem.heapUsed / 1024 / 1024).toFixed(1)}MB (files: ${logCounter})`);
+        }
+      },
+      onProgress: (progress) => {
+        emitter.checkCancellation();
+
+        // Primera vez que recibimos progreso de un archivo → cambiar a fase "copying"
+        if (!inCopyingPhase) {
+          inCopyingPhase = true;
+          emitter.progress({
+            currentStep: 'creating',
+            stepProgress: 100,
+            message: 'Carpetas preparadas',
+            force: true
+          });
+        }
+
+        let message;
+        if (progress.skipped) {
+          message = `⚠️ Omitido: ${progress.currentFile} (${progress.skipReason}) — ${progress.processedFiles}/${progress.totalFiles}`;
+          emitter.addNonCriticalError(`Omitido: ${progress.currentFile} (${progress.skipReason})`);
+        } else if (progress.error) {
+          message = `❌ Error no crítico: ${progress.currentFile} — ${progress.processedFiles}/${progress.totalFiles}`;
+          emitter.addNonCriticalError(`Error en ${progress.currentFile}: ${progress.errorMessage}`);
+        } else if (progress.compressed) {
+          message = `Zipping: ${progress.originalName} → ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`;
+        } else {
+          message = `Subiendo: ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`;
+        }
+
+        emitter.progress({
+          currentStep: 'copying',
+          stepProgress: progress.stepProgress,
+          message,
+          totalItems: progress.totalFiles,
+          processedItems: progress.processedFiles,
+          currentItem: progress.currentFile,
+          bytesTotal: progress.bytesTotal,
+          bytesTransferred: progress.bytesTransferred
+        });
+      }
+    });
+
+    partialResult = { ...copyResult, log: copyLog };
+
+    emitter.updateStats({
+      bytes: copyResult.summary?.bytesUploaded || 0,
+      files: copyResult.summary?.filesUploaded || 0
+    });
+
+    // ===== FASE 4: VERIFYING =====
+    currentStep = 'verifying';
+    emitter.progress({
+      currentStep,
+      stepProgress: 0,
+      message: 'Verificando migración…',
+      force: true
+    });
+
+    emitter.checkCancellation();
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 50,
+      message: 'Generando resumen…'
+    });
+
+    emitter.progress({
+      currentStep,
+      stepProgress: 100,
+      message: 'Copia de directorio completada'
+    });
+
+    // Resultado final
+    const finalResult = {
+      ok: true,
+      summary: copyResult.summary,
+      log: copyLog,
+      tookMs: copyResult.tookMs
+    };
+
+    const summary = copyResult.summary || {};
+    emitter.complete(finalResult, {
+      filesProcessed: summary.filesUploaded || 0,
+      bytesTransferred: summary.bytesUploaded || 0
+    });
+
+    logger.info(`[SSE][tree] Copia completada: ${sessionId}`, {
+      duration: copyResult.tookMs,
+      files: summary.filesUploaded,
+      folders: summary.foldersCreated,
+      skipped: summary.skipped
+    });
+
+  } catch (error) {
+    if (error.message === 'CANCELLED') {
+      emitter.cancelled(partialResult);
+      logger.info(`[SSE][tree] Copia cancelada: ${sessionId}`);
+    } else {
+      emitter.error(error, partialResult, currentStep);
+      logger.error(`[SSE][tree] Error en copia: ${sessionId}`, { error: error.message, step: currentStep });
+    }
+  }
+
+  res.end();
+}
+
 /**
  * POST /api/bridge/sp-to-new-acc-project/cancel/:sessionId
  * Cancela una sesión de migración en progreso
@@ -845,8 +1056,9 @@ module.exports = {
   spToAcc, 
   spTreeToAcc, 
   spToNewAccProject,
-  // Nuevos endpoints de streaming
+  // Endpoints de streaming SSE
   spToNewAccProjectStream,
+  spTreeToAccStream,
   cancelMigrationSession,
   listMigrationSessions,
   getMigrationSession

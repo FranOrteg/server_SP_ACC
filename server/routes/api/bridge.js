@@ -12,6 +12,9 @@ router.post('/sp-to-acc', ctrl.spToAcc);
 router.post('/sp-tree-to-acc', ctrl.spTreeToAcc);
 router.get('/sp-tree-to-acc', ctrl.spTreeToAcc); // opcional para test
 
+// --- STREAMING: Copia recursiva SP → ACC con progreso SSE ---
+router.post('/sp-tree-to-acc/stream', ctrl.spTreeToAccStream);
+
 // --- Sync segmento ---
 router.post('/sync-sp-segment', syncSegment);
 

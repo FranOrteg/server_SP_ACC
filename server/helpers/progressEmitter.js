@@ -15,6 +15,14 @@ const STEPS = {
   finalizing: { weight: 5, label: 'Finalizando y verificando' }
 };
 
+// Pesos alternativos para flujos de copia de directorio (sin fase members)
+const STEPS_TREE_COPY = {
+  reading:    { weight: 10, label: 'Leyendo estructura de SharePoint' },
+  creating:   { weight: 15, label: 'Creando carpetas en ACC' },
+  copying:    { weight: 70, label: 'Copiando archivos a ACC' },
+  verifying:  { weight: 5,  label: 'Verificando migración' }
+};
+
 /**
  * Calcula el progreso global basado en el paso actual y su progreso interno
  * @param {string} currentStep - Paso actual (reading, processing, uploading, members, finalizing)
@@ -37,12 +45,25 @@ function calculateGlobalProgress(currentStep, stepProgress) {
 }
 
 /**
+ * Calcula progreso global usando un mapa de pasos personalizado
+ */
+function calculateGlobalProgressCustom(stepsMap, currentStep, stepProgress) {
+  const steps = Object.keys(stepsMap);
+  const currentIndex = steps.indexOf(currentStep);
+  if (currentIndex === -1) return 0;
+  let completed = steps.slice(0, currentIndex).reduce((sum, s) => sum + stepsMap[s].weight, 0);
+  completed += (stepsMap[currentStep].weight * (stepProgress || 0)) / 100;
+  return Math.round(Math.min(completed, 100));
+}
+
+/**
  * Crea un emisor de progreso SSE
  * @param {Response} res - Objeto response de Express
  * @param {string} sessionId - ID de sesión único
  * @returns {Object} Objeto con métodos para emitir eventos
  */
-function createProgressEmitter(res, sessionId) {
+function createProgressEmitter(res, sessionId, opts = {}) {
+  const stepsMap = opts.stepsMap || STEPS; // permite pasar STEPS_TREE_COPY
   let lastEmit = 0;
   const THROTTLE_MS = 100; // No emitir más de 1 evento cada 100ms
   const nonCriticalErrors = [];
@@ -123,10 +144,10 @@ function createProgressEmitter(res, sessionId) {
       const payload = {
         sessionId,
         status: 'running',
-        progress: calculateGlobalProgress(data.currentStep, data.stepProgress),
+        progress: calculateGlobalProgressCustom(stepsMap, data.currentStep, data.stepProgress),
         currentStep: data.currentStep,
         stepProgress: data.stepProgress || 0,
-        stepLabel: STEPS[data.currentStep]?.label || data.currentStep,
+        stepLabel: stepsMap[data.currentStep]?.label || STEPS[data.currentStep]?.label || data.currentStep,
         message: data.message || '',
         details: {
           totalItems: data.totalItems || 0,
@@ -236,7 +257,7 @@ function createProgressEmitter(res, sessionId) {
 /**
  * Configura los headers SSE y registra la sesión
  */
-function setupSSE(req, res) {
+function setupSSE(req, res, opts = {}) {
   const sessionId = crypto.randomUUID();
   
   // ── Desactivar TODOS los timeouts para esta conexión SSE ──
@@ -349,7 +370,7 @@ function setupSSE(req, res) {
     }
   });
 
-  return { sessionId, emitter: createProgressEmitter(res, sessionId) };
+  return { sessionId, emitter: createProgressEmitter(res, sessionId, { stepsMap: opts.stepsMap }) };
 }
 
 /**
@@ -427,7 +448,9 @@ process.on('SIGTERM', () => {
 
 module.exports = {
   STEPS,
+  STEPS_TREE_COPY,
   calculateGlobalProgress,
+  calculateGlobalProgressCustom,
   createProgressEmitter,
   setupSSE,
   cancelSession,
