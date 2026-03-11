@@ -6,7 +6,8 @@ module.exports = {
     exec_mode: 'fork',
     autorestart: true,
     watch: false,
-    max_memory_restart: '2G',       // 500M era insuficiente para migraciones de sitios SP grandes
+    node_args: '--max-old-space-size=4096', // permite heap de 4GB para uploads grandes
+    max_memory_restart: '4G',       // margen amplio; multipart limita el pico real a ~200 MB
     kill_timeout: 30000,             // 30s de gracia para que termine operaciones en curso
     listen_timeout: 10000,
     env: {

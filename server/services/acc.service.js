@@ -127,35 +127,50 @@ function parseStorageUrn(storageUrn) {
   return { bucketKey: m[1], objectName: m[2] };
 }
 
+// ── Constantes para multipart upload ──
+const MULTIPART_THRESHOLD = 100 * 1024 * 1024;   // 100 MB: usa multipart por encima
+const CHUNK_SIZE           = 100 * 1024 * 1024;   // 100 MB por parte
+const MAX_URLS_BATCH       = 25;                   // máx URLs firmadas por petición APS
+const PART_PUT_RETRIES     = 3;                    // reintentos por parte
+
 // --- STORAGE + UPLOAD (Signed S3 Upload para ACC/WIP) ---
 async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
   const { bucketKey, objectName } = parseStorageUrn(storageUrn);
   const size = fs.statSync(localFilePath).size;
 
-  // Scoped uploads requieren el contexto real del proyecto
   if (!opts.projectId) {
     throw new Error('uploadFileToStorage: falta projectId (requerido para signeds3upload?scoped=true)');
   }
   const { hubId, hubRegion } = await getTopFoldersByProjectId(opts.projectId, { preferHubId: opts.preferHubId });
   const region = (hubRegion || process.env.APS_REGION || 'US').toUpperCase();
 
-
   console.log('[UPLOAD] storageUrn:', storageUrn);
   console.log('[UPLOAD] hubId:', hubId, 'region:', region);
   console.log('[UPLOAD] bucket:', bucketKey, 'objectKey:', objectName, 'size:', size);
 
   const base = `/oss/v2/buckets/${encodeURIComponent(bucketKey)}/objects/${encodeURIComponent(objectName)}/signeds3upload?scoped=true`;
+  const regionHeaders = { 'x-ads-region': region, 'x-ads-hub-id': hubId };
 
-  // INIT
+  // ── Multipart para archivos grandes ──
+  if (size > MULTIPART_THRESHOLD) {
+    return await _uploadMultipart(base, localFilePath, size, regionHeaders);
+  }
+
+  // ── Single-part para archivos normales (≤ 100 MB) ──
+  return await _uploadSinglePart(base, localFilePath, size, regionHeaders);
+}
+
+// ── Upload single-part (archivos ≤ 100 MB) ──
+async function _uploadSinglePart(base, localFilePath, size, regionHeaders) {
   let init;
   try {
     const initUrl = `${base}&firstPart=1&parts=1`;
     console.log('[UPLOAD] GET', initUrl);
-    init = await aps.apiGet(initUrl, { headers: { 'x-ads-region': region, 'x-ads-hub-id': hubId } });
+    init = await aps.apiGet(initUrl, { headers: regionHeaders });
   } catch (e) {
     console.log('[UPLOAD] GET init failed, trying POST-init… reason:', e?.response?.data || e?.message);
     const body = { contentType: 'application/octet-stream', contentLength: size };
-    init = await aps.apiPost(base, body, { headers: { 'x-ads-region': region, 'x-ads-hub-id': hubId } });
+    init = await aps.apiPost(base, body, { headers: regionHeaders });
   }
 
   console.log('[UPLOAD][init] raw resp keys:', Object.keys(init || {}));
@@ -178,11 +193,93 @@ async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
 
   const completeBody = { uploadKey };
   console.log('[UPLOAD] POST', base, 'body:', completeBody);
-  const fin = await aps.apiPost(base, completeBody, { headers: { 'x-ads-region': region, 'x-ads-hub-id': hubId } });
+  const fin = await aps.apiPost(base, completeBody, { headers: regionHeaders });
   console.log('[UPLOAD][complete] ok. keys:', Object.keys(fin || {}));
 
   await sleep(300);
-  return { ok: true, region, uploadKey };
+  return { ok: true, region: regionHeaders['x-ads-region'], uploadKey };
+}
+
+// ── Upload multipart (archivos > 100 MB) ──
+async function _uploadMultipart(base, localFilePath, size, regionHeaders) {
+  const numParts = Math.ceil(size / CHUNK_SIZE);
+  const sizeMB = (size / (1024 * 1024)).toFixed(1);
+  const chunkMB = (CHUNK_SIZE / (1024 * 1024)).toFixed(0);
+  console.log(`[UPLOAD][multipart] archivo de ${sizeMB} MB → ${numParts} partes × ${chunkMB} MB`);
+
+  // 1) Solicitar URLs firmadas (en lotes de MAX_URLS_BATCH)
+  let uploadKey = null;
+  const allUrls = [];
+
+  for (let firstPart = 1; firstPart <= numParts; firstPart += MAX_URLS_BATCH) {
+    const batchSize = Math.min(MAX_URLS_BATCH, numParts - firstPart + 1);
+    const params = uploadKey
+      ? `${base}&firstPart=${firstPart}&parts=${batchSize}&uploadKey=${encodeURIComponent(uploadKey)}`
+      : `${base}&firstPart=${firstPart}&parts=${batchSize}`;
+
+    console.log(`[UPLOAD][multipart] GET urls batch firstPart=${firstPart} count=${batchSize}`);
+    const init = await aps.apiGet(params, { headers: regionHeaders });
+
+    if (!uploadKey) {
+      uploadKey = init.uploadKey || init.data?.uploadKey;
+      if (!uploadKey) throw new Error('[signeds3upload:init] no uploadKey en respuesta multipart');
+      console.log('[UPLOAD][multipart] uploadKey:', uploadKey);
+    }
+
+    const urls = init.urls || init.data?.urls || [];
+    for (const u of urls) allUrls.push(typeof u === 'string' ? u : (u?.url || u));
+  }
+
+  if (allUrls.length < numParts) {
+    throw new Error(`[signeds3upload] esperaba ${numParts} urls, recibió ${allUrls.length}`);
+  }
+
+  // 2) Subir cada parte secuencialmente con reintentos (bajo consumo de RAM)
+  for (let i = 0; i < numParts; i++) {
+    const start = i * CHUNK_SIZE;
+    const end   = Math.min(start + CHUNK_SIZE, size) - 1; // inclusivo
+    const partSize = end - start + 1;
+
+    let lastErr;
+    for (let attempt = 1; attempt <= PART_PUT_RETRIES; attempt++) {
+      try {
+        console.log(
+          `[UPLOAD][multipart] part ${i + 1}/${numParts}  ` +
+          `bytes ${start}–${end}  (${(partSize / (1024 * 1024)).toFixed(1)} MB)` +
+          (attempt > 1 ? `  intento ${attempt}` : '')
+        );
+        const partStream = fs.createReadStream(localFilePath, { start, end });
+        const putRes = await axios.put(allUrls[i], partStream, {
+          headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': partSize },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          timeout: 0
+        });
+        console.log(`[UPLOAD][multipart] part ${i + 1} → status ${putRes.status}`);
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < PART_PUT_RETRIES) {
+          const wait = 2000 * attempt;
+          console.warn(`[UPLOAD][multipart] part ${i + 1} falló (intento ${attempt}): ${e.message}. Reintento en ${wait}ms…`);
+          await sleep(wait);
+        }
+      }
+    }
+    if (lastErr) {
+      throw new Error(`[UPLOAD][multipart] part ${i + 1} falló tras ${PART_PUT_RETRIES} intentos: ${lastErr.message}`);
+    }
+  }
+
+  // 3) Completar el upload
+  const completeBody = { uploadKey };
+  console.log('[UPLOAD][multipart] POST complete');
+  const fin = await aps.apiPost(base, completeBody, { headers: regionHeaders });
+  console.log('[UPLOAD][complete] ok. keys:', Object.keys(fin || {}));
+
+  await sleep(300);
+  return { ok: true, region: regionHeaders['x-ads-region'], uploadKey };
 }
 
 // --- ARCHIVOS ---
