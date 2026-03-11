@@ -4,6 +4,7 @@ const sp = require('./sharepoint.service');
 const acc = require('./acc.service');
 const fs = require('fs');
 const path = require('path');
+const archiver = require('archiver');
 
 // ── Extensiones bloqueadas por ACC / APS (403 ERR_NOT_ALLOWED) ──
 // Listado basado en las restricciones de Autodesk Data Management.
@@ -27,6 +28,25 @@ const BLOCKED_EXTENSIONS = new Set([
 function isExtensionBlocked(fileName) {
   const ext = path.extname(fileName || '').toLowerCase();
   return { blocked: BLOCKED_EXTENSIONS.has(ext), ext };
+}
+
+/**
+ * Comprime un archivo a .zip (streaming, bajo consumo de RAM).
+ * @param {string} inputPath  – ruta del archivo temporal original
+ * @param {string} entryName  – nombre que tendrá dentro del zip (ej. "page.html")
+ * @returns {Promise<string>} – ruta del .zip generado
+ */
+function compressToZip(inputPath, entryName) {
+  const zipPath = `${inputPath}.zip`;
+  return new Promise((resolve, reject) => {
+    const output = fs.createWriteStream(zipPath);
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    output.on('close', () => resolve(zipPath));
+    archive.on('error', reject);
+    archive.pipe(output);
+    archive.file(inputPath, { name: entryName });
+    archive.finalize();
+  });
 }
 
 // Devuelve un nombre disponible si existe colisión (filename, filename (1).ext, filename (2).ext, …)
@@ -53,6 +73,16 @@ async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, f
   const meta = await sp.getItemMeta(driveId, itemId);
   let name = fileName || meta.name || (itemId + '.bin');
 
+  // ── Extensión bloqueada → comprimir a .zip ──
+  let uploadPath = tmpPath;
+  const { blocked, ext } = isExtensionBlocked(name);
+  if (blocked) {
+    console.log(`[XFER][zip] extensión ${ext} bloqueada → comprimiendo: ${name}`);
+    uploadPath = await compressToZip(tmpPath, name);
+    name = `${name}.zip`;
+    console.log(`[XFER][zip] comprimido ok: ${name} (${fs.statSync(uploadPath).size} bytes)`);
+  }
+
   try {
     // conflicto (si existe mismo nombre en carpeta destino)
     const existing = await acc.findItemByName(projectId, folderId, name);
@@ -67,7 +97,7 @@ async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, f
     }
 
     const storageUrn = await acc.createStorage(projectId, folderId, name);
-    await acc.uploadFileToStorage(storageUrn, tmpPath, { projectId });
+    await acc.uploadFileToStorage(storageUrn, uploadPath, { projectId });
 
     if (!existing || onConflict === 'rename') {
       const created = await acc.createItem(projectId, folderId, name, storageUrn);
@@ -84,6 +114,7 @@ async function copySharePointItemToAcc({ driveId, itemId, projectId, folderId, f
     }
   } finally {
     try { fs.unlinkSync(tmpPath); } catch {}
+    if (uploadPath !== tmpPath) { try { fs.unlinkSync(uploadPath); } catch {} }
   }
 }
 
@@ -260,35 +291,16 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
   let fileName = spItem.name;
   const size = spItem.size || 0;
 
-  // ── Filtro de extensiones bloqueadas por ACC ──
+  // ── Extensiones bloqueadas → comprimir a .zip antes de subir ──
   const { blocked, ext } = isExtensionBlocked(fileName);
+  let needsZip = false;
   if (blocked) {
-    onLog(`⚠️  skip (extensión ${ext} no permitida en ACC): ${fileName}`);
-    summary.skipped++;
-    summary.skippedBlocked = (summary.skippedBlocked || 0) + 1;
-    summary.blockedFiles = summary.blockedFiles || [];
-    summary.blockedFiles.push({ name: fileName, reason: `extension ${ext} blocked by ACC` });
-
-    // Actualizar progreso (sin sumar bytes, el fichero no se transfiere)
-    if (progressCtx) {
-      progressCtx.processedFiles++;
-    }
-    if (onProgress && progressCtx) {
-      const stepProgress = progressCtx.totalFiles > 0
-        ? Math.round((progressCtx.processedFiles / progressCtx.totalFiles) * 100)
-        : 0;
-      onProgress({
-        totalFiles: progressCtx.totalFiles,
-        processedFiles: progressCtx.processedFiles,
-        currentFile: fileName,
-        bytesTotal: progressCtx.totalBytes,
-        bytesTransferred: progressCtx.bytesTransferred,
-        stepProgress,
-        skipped: true,
-        skipReason: `extensión ${ext} no permitida en ACC`
-      });
-    }
-    return;
+    needsZip = true;
+    fileName = `${fileName}.zip`;
+    onLog(`🗜️  extensión ${ext} bloqueada → se subirá comprimido como: ${fileName}`);
+    summary.compressed = (summary.compressed || 0) + 1;
+    summary.compressedFiles = summary.compressedFiles || [];
+    summary.compressedFiles.push({ originalName: spItem.name, zipName: fileName });
   }
 
   // Actualizar progreso: archivo actual
@@ -304,7 +316,8 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
         currentFile: fileName,
         bytesTotal: progressCtx.totalBytes,
         bytesTransferred: progressCtx.bytesTransferred,
-        stepProgress
+        stepProgress,
+        ...(needsZip ? { compressed: true, originalName: spItem.name } : {})
       });
     }
   }
@@ -332,10 +345,18 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
   const tmpPath = await sp.downloadItemToTmp(driveId, spItem.id);
   console.log(`[XFER][tmp] ${tmpPath}`);
 
+  // Comprimir si la extensión está bloqueada
+  let uploadPath = tmpPath;
+  if (needsZip) {
+    uploadPath = await compressToZip(tmpPath, spItem.name);
+    const zipSize = fs.statSync(uploadPath).size;
+    console.log(`[XFER][zip] ${spItem.name} → ${fileName} (${zipSize} bytes)`);
+  }
+
   try {
     const storageUrn = await acc.createStorage(projectId, destFolderId, fileName);
-    console.log(`[XFER][storage] ${storageUrn} → ${fileName} size: ${size}`);
-    await acc.uploadFileToStorage(storageUrn, tmpPath, { projectId });
+    console.log(`[XFER][storage] ${storageUrn} → ${fileName} size: ${needsZip ? fs.statSync(uploadPath).size : size}`);
+    await acc.uploadFileToStorage(storageUrn, uploadPath, { projectId });
 
     if (!existing || mode === 'rename') {
       const created = await acc.createItem(projectId, destFolderId, fileName, storageUrn);
@@ -359,6 +380,7 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
     }
   } finally {
     try { fs.unlinkSync(tmpPath); } catch {}
+    if (needsZip && uploadPath !== tmpPath) { try { fs.unlinkSync(uploadPath); } catch {} }
   }
 }
 

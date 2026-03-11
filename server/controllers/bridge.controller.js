@@ -567,6 +567,8 @@ async function spToNewAccProjectStream(req, res) {
         } else if (progress.error) {
           message = `❌ Error no crítico: ${progress.currentFile} — ${progress.processedFiles}/${progress.totalFiles}`;
           emitter.addNonCriticalError(`Error en ${progress.currentFile}: ${progress.errorMessage}`);
+        } else if (progress.compressed) {
+          message = `🗜️ Comprimido: ${progress.originalName} → ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`;
         } else {
           message = `Subiendo: ${progress.currentFile} (${progress.processedFiles}/${progress.totalFiles})`;
         }
