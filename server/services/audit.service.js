@@ -31,21 +31,31 @@ const { listAccSubtreeFlat, findSubfolderByName } = require('./acc.inventory');
 
 async function auditSpToAcc({ siteId, projectId, since, dryRun = true, hashPolicy = 'auto',
     driveId, itemId, accFolderId, mtimePolicy = 'informational',
-    mtimeSkewSec = 120 }) {
+    mtimeSkewSec = 120, onProgress } = {}) {
     const reportId = rid();
     const startedAt = new Date().toISOString();
 
+    // helper: notifica progreso si hay callback
+    const emit = (phase, detail) => {
+        if (typeof onProgress === 'function') onProgress({ phase, ...detail });
+    };
+
     console.log('[AUDIT] start', { projectId, siteId, driveId, itemId, accFolderId, since, hashPolicy });
+    emit('started', { reportId });
 
     let spList;
     let accList;
 
     if (driveId && itemId && accFolderId) {
         // --- Inventario SP (segmento mapeado) ---
+        emit('sp_scan', { message: 'Escaneando SharePoint…' });
         spList = await listSpSegmentMappedToAcc({ driveId, itemId, projectId, accFolderId, since });
         console.log('[AUDIT] spList ready:', spList.length);
+        emit('sp_scan_done', { count: spList.length });
 
         // --- Calcular subárbol ACC equivalente ---
+        emit('acc_scan', { message: 'Escaneando ACC…' });
+
         // 1) ¿era raíz de biblioteca?
         const rootMeta = await spSvc.getItemMeta(driveId, itemId);
         const treatAsRoot = !!(rootMeta?.folder && (spSvc.isDocLibRoot(rootMeta) || spSvc.isDriveRoot(rootMeta)));
@@ -80,19 +90,26 @@ async function auditSpToAcc({ siteId, projectId, since, dryRun = true, hashPolic
                 const startPath = treatAsRoot
                     ? `${accRootPath}/${siteName}`
                     : `${accRootPath}/${siteName}/${rootMeta?.name}`;
-                accList = await listAccSubtreeFlat(projectId, startFolderId, { startPath, withMeta: true });
+                accList = await listAccSubtreeFlat(projectId, startFolderId, { startPath, withMeta: true, metaConcurrency: 10 });
             }
         }
 
         console.log('[AUDIT] accList ready (subtree):', accList.length);
+        emit('acc_scan_done', { count: accList.length });
     } else {
         // --- Modo site completo (puede tardar si el proyecto es grande) ---
+        emit('sp_scan', { message: 'Escaneando SharePoint (site completo)…' });
         spList = await listSiteFlat(siteId, { since });
         console.log('[AUDIT] spList ready (site):', spList.length);
+        emit('sp_scan_done', { count: spList.length });
+
+        emit('acc_scan', { message: 'Escaneando ACC…' });
         accList = await listAccFlat(projectId);
         console.log('[AUDIT] accList ready (full):', accList.length);
+        emit('acc_scan_done', { count: accList.length });
     }
 
+    emit('diff', { message: 'Calculando diferencias…' });
     const items = buildDiff(spList, accList, hashPolicy, { mtimePolicy, mtimeSkewSec });
 
     const summary = {
@@ -124,6 +141,8 @@ async function auditSpToAcc({ siteId, projectId, since, dryRun = true, hashPolic
     const csvPath = path.join(DATA_DIR, `${reportId}.csv`);
     fs.writeFileSync(jsonPath, JSON.stringify(payload, null, 2));
     fs.writeFileSync(csvPath, toCsv(items));
+
+    emit('done', { reportId, summary });
 
     return { ...payload, downloadUrlCsv: `/api/audit/report/${reportId}/csv` };
 }

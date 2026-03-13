@@ -4,6 +4,7 @@ const router = require('express').Router();
 const ctrl = require('../../controllers/audit.controller');
 
 router.get('/sp-to-acc', ctrl.audit);
+router.get('/sp-to-acc/stream', ctrl.auditStream);
 router.get('/report/:reportId', ctrl.report);
 router.get('/report/:reportId/csv', ctrl.reportCsv);
 router.get('/reports', ctrl.listReports);

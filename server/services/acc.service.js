@@ -124,7 +124,12 @@ async function createStorage(projectId, folderId, fileName) {
 function parseStorageUrn(storageUrn) {
   const m = /^urn:adsk\.objects:os\.object:([^/]+)\/(.+)$/.exec(storageUrn);
   if (!m) throw new Error(`Storage URN inválido: ${storageUrn}`);
-  return { bucketKey: m[1], objectName: m[2] };
+  // El objectName del URN puede venir pre-codificado (ej. %24 = $).
+  // Lo decodificamos aquí para que encodeURIComponent al armar URLs
+  // no produzca doble codificación (%24 → %2524).
+  let objectName = m[2];
+  try { objectName = decodeURIComponent(objectName); } catch (_) {}
+  return { bucketKey: m[1], objectName };
 }
 
 // ── Constantes para multipart upload ──

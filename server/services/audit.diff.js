@@ -34,7 +34,18 @@ function buildDiff(spList, accList, hashPolicy = 'auto', opts = {}) {
 
   for (const s of spList || []) {
     const path = normPath(s.path);
-    const a = accByPath.get(path);
+    let a = accByPath.get(path);
+    let wasCompressed = false;
+
+    // Fallback: ficheros con extensión bloqueada se comprimieron a .zip al migrar
+    // → buscar path + '.zip' en ACC
+    if (!a) {
+      const aZip = accByPath.get(normPath(path + '.zip'));
+      if (aZip) {
+        a = aZip;
+        wasCompressed = true;
+      }
+    }
 
     const src = { size: s.size ?? null, hash: s.hash ?? null, mtime: s.mtime ?? null, id: s.id ?? null };
     const dst = a
@@ -45,45 +56,58 @@ function buildDiff(spList, accList, hashPolicy = 'auto', opts = {}) {
 
     if (!a) {
       state = 'MISSING_IN_ACC';
+    } else if (wasCompressed) {
+      // Fichero bloqueado → se comprimió a .zip; size/hash no son comparables
+      state = 'OK';
+      action = 'NONE';
+      notes = 'extensión bloqueada → comprimido a .zip en ACC';
     } else {
-      const haveBothHash = src.hash && dst.hash;
-      const haveBothSize = Number.isFinite(src.size) && Number.isFinite(dst.size);
+      // Comprobar si dst no tiene metadatos (rate-limit 429 / API error)
+      const dstHasNoMeta = dst.size == null && dst.hash == null && dst.mtime == null;
+      if (dstHasNoMeta) {
+        state = 'OK';
+        action = 'NONE';
+        notes = 'presente en ACC; meta no disponible (rate-limit API)';
+      } else {
+        const haveBothHash = src.hash && dst.hash;
+        const haveBothSize = Number.isFinite(src.size) && Number.isFinite(dst.size);
 
-      // 1) Hash decide si ambos presentes o si la policy lo exige
-      if ((hashPolicy === 'hash_only' || (hashPolicy === 'auto' && haveBothHash))) {
-        if (haveBothHash) {
-          if (src.hash === dst.hash) {
-            state = 'OK';
+        // 1) Hash decide si ambos presentes o si la policy lo exige
+        if ((hashPolicy === 'hash_only' || (hashPolicy === 'auto' && haveBothHash))) {
+          if (haveBothHash) {
+            if (src.hash === dst.hash) {
+              state = 'OK';
+            } else {
+              state = 'HASH_MISMATCH';
+            }
           } else {
-            state = 'HASH_MISMATCH';
+            // no hay hash, caemos a size
+            if (haveBothSize) {
+              state = (src.size === dst.size) ? 'OK' : 'SIZE_MISMATCH';
+            } else {
+              state = decideByMtime(src, dst, mtimePolicy, mtimeSkewSec);
+            }
           }
-        } else {
-          // no hay hash, caemos a size
+        }
+        // 2) Size decide si policy es size_only o auto sin hash
+        else if (hashPolicy === 'size_only' || hashPolicy === 'auto') {
           if (haveBothSize) {
             state = (src.size === dst.size) ? 'OK' : 'SIZE_MISMATCH';
           } else {
             state = decideByMtime(src, dst, mtimePolicy, mtimeSkewSec);
           }
         }
-      }
-      // 2) Size decide si policy es size_only o auto sin hash
-      else if (hashPolicy === 'size_only' || hashPolicy === 'auto') {
-        if (haveBothSize) {
-          state = (src.size === dst.size) ? 'OK' : 'SIZE_MISMATCH';
-        } else {
+        // 3) último recurso por mtime
+        else {
           state = decideByMtime(src, dst, mtimePolicy, mtimeSkewSec);
         }
-      }
-      // 3) último recurso por mtime
-      else {
-        state = decideByMtime(src, dst, mtimePolicy, mtimeSkewSec);
-      }
 
-      // Nota informativa de deriva temporal si procede y no afecta al estado OK
-      if (state === 'OK' && src.mtime && dst.mtime) {
-        const driftSec = Math.abs((new Date(dst.mtime) - new Date(src.mtime)) / 1000);
-        if (driftSec > mtimeSkewSec) {
-          notes = `mtime drift ${Math.round(driftSec)}s (SP=${src.mtime} vs ACC=${dst.mtime})`;
+        // Nota informativa de deriva temporal si procede y no afecta al estado OK
+        if (state === 'OK' && src.mtime && dst.mtime) {
+          const driftSec = Math.abs((new Date(dst.mtime) - new Date(src.mtime)) / 1000);
+          if (driftSec > mtimeSkewSec) {
+            notes = `mtime drift ${Math.round(driftSec)}s (SP=${src.mtime} vs ACC=${dst.mtime})`;
+          }
         }
       }
     }

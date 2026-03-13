@@ -100,4 +100,72 @@ async function repair(req, res, next) {
 }
 
 
-module.exports = { audit, report, reportCsv, repair, listReports, reAudit };
+/**
+ * GET /api/audit/sp-to-acc/stream
+ * SSE streaming: mantiene la conexión viva enviando eventos de progreso
+ * mientras la auditoría escanea SP y ACC (evita el idle timeout de Lightsail 60s).
+ *
+ * Los mismos query params que el endpoint normal.
+ * Eventos SSE:
+ *   - progress { phase, message?, count? }   → cada fase del audit
+ *   - heartbeat { ts }                       → cada 10s para keepalive
+ *   - result   { ...payload }                → resultado completo
+ *   - error    { error }                     → si falla
+ */
+async function auditStream(req, res) {
+    // --- Cabeceras SSE ---
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    });
+    res.flushHeaders();
+
+    const write = (event, data) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // Heartbeat cada 10s para mantener viva la conexión ante el LB Lightsail
+    const hb = setInterval(() => write('heartbeat', { ts: Date.now() }), 10_000);
+
+    const cleanup = () => { clearInterval(hb); };
+    req.on('close', cleanup);
+
+    try {
+        const {
+            siteId, projectId, since, dryRun = 'true', hashPolicy = 'auto',
+            driveId, itemId, accFolderId,
+            mtimePolicy = 'informational', mtimeSkewSec = '120'
+        } = req.query;
+
+        if (!projectId) {
+            write('error', { error: 'projectId es obligatorio' });
+            cleanup(); res.end(); return;
+        }
+        if (!(driveId && itemId && accFolderId) && !siteId) {
+            write('error', { error: 'siteId es obligatorio si no pasas driveId+itemId+accFolderId' });
+            cleanup(); res.end(); return;
+        }
+
+        const rep = await auditSpToAcc({
+            siteId, projectId, since,
+            dryRun: String(dryRun) !== 'false',
+            hashPolicy,
+            driveId, itemId, accFolderId,
+            mtimePolicy, mtimeSkewSec: Number(mtimeSkewSec) || 120,
+            onProgress: (info) => write('progress', info)
+        });
+
+        write('result', rep);
+    } catch (e) {
+        console.error('[AUDIT][stream] error:', e?.message || e);
+        write('error', { error: e?.message || 'error interno de auditoría' });
+    } finally {
+        cleanup();
+        res.end();
+    }
+}
+
+
+module.exports = { audit, auditStream, report, reportCsv, repair, listReports, reAudit };

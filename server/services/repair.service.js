@@ -6,6 +6,7 @@ const axios = require('axios');
 const { graphGet, graphGetStream } = require('../clients/graphClient');
 const acc = require('./acc.service');
 const { getReport } = require('./audit.service');
+const { isExtensionBlocked, compressToZip } = require('./transfer.service');
 
 const TMP = path.join(os.tmpdir(), 'spacc');
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true });
@@ -47,11 +48,29 @@ function splitPath(p) {
 }
 
 async function uploadToAcc(projectId, folderId, fileName, localFile) {
-  const storageUrn = await acc.createStorage(projectId, folderId, fileName);
-  await acc.uploadFileToStorage(storageUrn, localFile, { projectId });
-  const existing = await acc.findItemByName(projectId, folderId, fileName);
-  if (!existing) await acc.createItem(projectId, folderId, fileName, storageUrn);
-  else await acc.createVersion(projectId, existing.id, fileName, storageUrn);
+  // ── Extensión bloqueada → comprimir a .zip antes de subir ──
+  let uploadPath = localFile;
+  let uploadName = fileName;
+  const { blocked, ext } = isExtensionBlocked(fileName);
+  if (blocked) {
+    console.log(`[REPAIR][zip] extensión ${ext} bloqueada → comprimiendo: ${fileName}`);
+    uploadPath = await compressToZip(localFile, fileName);
+    uploadName = `${fileName}.zip`;
+    console.log(`[REPAIR][zip] comprimido ok: ${uploadName} (${fs.statSync(uploadPath).size} bytes)`);
+  }
+
+  try {
+    const storageUrn = await acc.createStorage(projectId, folderId, uploadName);
+    await acc.uploadFileToStorage(storageUrn, uploadPath, { projectId });
+    const existing = await acc.findItemByName(projectId, folderId, uploadName);
+    if (!existing) await acc.createItem(projectId, folderId, uploadName, storageUrn);
+    else await acc.createVersion(projectId, existing.id, uploadName, storageUrn);
+  } finally {
+    // Limpiar el .zip temporal si se creó
+    if (blocked && uploadPath !== localFile) {
+      try { fs.unlinkSync(uploadPath); } catch (_) {}
+    }
+  }
 }
 
 async function repairFromReport(reportId, { siteId, projectId, includeStates = ['MISSING_IN_ACC','SIZE_MISMATCH','HASH_MISMATCH'], maxConcurrency = 4, driveId } = {}) {

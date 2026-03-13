@@ -49,10 +49,16 @@ async function listAccFlat(projectId) {
 /**
  * BFS de un folder concreto: devuelve items con path + meta (opcional)
  * [{ path, size, hash, mtime, urn }]
+ *
+ * withMeta = true  → obtiene size/mtime de cada item (lento, N peticiones)
+ * metaConcurrency  → peticiones de meta en paralelo (por defecto 10)
  */
-async function listAccSubtreeFlat(projectId, startFolderId, { startPath, withMeta = false } = {}) {
+async function listAccSubtreeFlat(projectId, startFolderId, { startPath, withMeta = false, metaConcurrency = 5 } = {}) {
     const out = [];
     const queue = [{ id: startFolderId, path: startPath || '' }];
+
+    // Fase 1: BFS para obtener la estructura (rápido, solo listFolderContents)
+    const pendingMeta = []; // items que necesitan meta
 
     while (queue.length) {
         const { id, path: basePath } = queue.shift();
@@ -65,21 +71,35 @@ async function listAccSubtreeFlat(projectId, startFolderId, { startPath, withMet
             if (entry.type === 'folders') {
                 queue.push({ id: entry.id, path: childPath });
             } else if (entry.type === 'items') {
-                let size = null, mtime = null, hash = null;
-                if (withMeta) {
-                    try {
-                        const meta = await getItemTipVersionMeta(projectId, entry.id);
-                        size = meta.size;
-                        mtime = meta.mtime;
-                        hash = meta.hash;
-                    } catch (e) {
-                        if (process.env.DEBUG) console.warn('[ACC][meta] falló tip version meta:', e?.response?.status || e?.message);
-
-                    }
-                }
-                out.push({ path: childPath, size, hash, mtime, urn: entry.id });
+                const item = { path: childPath, size: null, hash: null, mtime: null, urn: entry.id };
+                out.push(item);
+                if (withMeta) pendingMeta.push(item);
             }
         }
+    }
+
+    // Fase 2: obtener meta con concurrencia limitada (si withMeta)
+    if (pendingMeta.length > 0) {
+        console.log(`[ACC][subtree] fetching meta for ${pendingMeta.length} items (concurrency=${metaConcurrency})`);
+        let idx = 0;
+        const fetchNext = async () => {
+            while (idx < pendingMeta.length) {
+                const i = idx++;
+                const item = pendingMeta[i];
+                try {
+                    const meta = await getItemTipVersionMeta(projectId, item.urn);
+                    item.size = meta.size;
+                    item.mtime = meta.mtime;
+                    item.hash = meta.hash;
+                } catch (e) {
+                    if (process.env.DEBUG) console.warn('[ACC][meta] falló tip version meta:', e?.response?.status || e?.message);
+                }
+            }
+        };
+        // Lanzar N workers en paralelo
+        const workers = Array.from({ length: Math.min(metaConcurrency, pendingMeta.length) }, () => fetchNext());
+        await Promise.all(workers);
+        console.log(`[ACC][subtree] meta fetch complete`);
     }
 
     return out.sort((a, b) => a.path.localeCompare(b.path));

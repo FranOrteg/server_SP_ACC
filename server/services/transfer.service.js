@@ -10,15 +10,27 @@ const archiver = require('archiver');
 // Listado basado en las restricciones de Autodesk Data Management.
 // Se puede ampliar fácilmente añadiendo nuevas extensiones.
 const BLOCKED_EXTENSIONS = new Set([
-  '.html', '.htm',
-  '.js',   '.jsx',
-  '.php',  '.asp',  '.aspx',
-  '.exe',  '.bat',  '.cmd',  '.com',  '.msi',
-  '.dll',  '.sys',  '.drv',
-  '.vbs',  '.vbe',  '.wsc',  '.wsf',  '.wsh',
-  '.ps1',  '.ps2',  '.psc1', '.psc2',
-  '.scf',  '.lnk',  '.inf',  '.reg',
+  // Web / scripts
+  '.html', '.htm', '.svg', '.css',
+  '.asp', '.aspx', '.php', '.jsp', '.cgi',
+  // Ejecutables / instaladores
+  '.exe', '.msi', '.bat', '.cmd', '.ps1', '.sh', '.bash',
+  '.dll', '.sys', '.com', '.scr', '.cpl', '.pif',
+  // Scripts / macros
+  '.vbs', '.js', '.wsf', '.wsh', '.hta',
+  '.py', '.rb', '.pl',
+  // Configuración / sistema
+  '.inf', '.reg', '.url', '.lnk',
+  // Temporales / lock
+  '.tmp', '.lock', '.bak',
+  // Software específico (BIM/CAD no soportados por APS)
+  '.pctbs',
+  // Otros formatos que APS rechaza
+  '.mht', '.mhtml', '.xml', '.json', '.yml', '.yaml',
+  '.db', '.sqlite', '.mdb',
+  '.log', '.ini', '.cfg', '.conf',
 ]);
+
 
 /**
  * Comprueba si la extensión de un fichero está bloqueada por ACC.
@@ -384,4 +396,4 @@ async function copyOneFile(driveId, spItem, projectId, destFolderId, mode, dryRu
   }
 }
 
-module.exports = { copySharePointItemToAcc, copySpTreeToAcc, prescanSpTree };
+module.exports = { copySharePointItemToAcc, copySpTreeToAcc, prescanSpTree, isExtensionBlocked, compressToZip };

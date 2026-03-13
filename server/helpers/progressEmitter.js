@@ -155,7 +155,7 @@ function createProgressEmitter(res, sessionId, opts = {}) {
           currentItem: data.currentItem || '',
           bytesTransferred: data.bytesTransferred || bytesTransferred,
           bytesTotal: data.bytesTotal || 0,
-          errors: nonCriticalErrors.slice(-10) // Últimos 10 errores no críticos
+          errors: nonCriticalErrors.slice(-10).map(e => typeof e === 'string' ? e : e.message || String(e))
         }
       };
       
@@ -179,7 +179,7 @@ function createProgressEmitter(res, sessionId, opts = {}) {
           filesProcessed,
           bytesTransferred,
           membersAdded: summary.membersAdded || 0,
-          errors: nonCriticalErrors
+          errors: nonCriticalErrors.map(e => typeof e === 'string' ? e : e.message || String(e))
         }
       };
       
@@ -201,7 +201,7 @@ function createProgressEmitter(res, sessionId, opts = {}) {
           duration: Date.now() - startTime,
           filesProcessed,
           bytesTransferred,
-          errors: nonCriticalErrors
+          errors: nonCriticalErrors.map(e => typeof e === 'string' ? e : e.message || String(e))
         }
       };
       
