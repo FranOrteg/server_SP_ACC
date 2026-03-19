@@ -41,6 +41,18 @@ async function projects(req, res, next) {
   } catch (e) { next(e); }
 }
 
+async function findProjectByName(req, res, next) {
+  try {
+    const { hubId, name } = req.query;
+
+    if (!hubId || !name || name.trim().length < 2)
+      return res.status(400).json({ error: 'hubId y name (mín. 2 caracteres) son obligatorios' });
+
+    const results = await accSvc.findProjectByName(hubId, name);
+    res.json(results);
+  } catch (e) { next(e); }
+}
+
 async function topFolders(req, res, next) {
   try {
     const { hubId, projectId } = req.query;
@@ -105,5 +117,6 @@ module.exports = {
   list,
   projectTree,
   folderByPath,
-  projectInfo
+  projectInfo,
+  findProjectByName
 };

@@ -44,6 +44,18 @@ async function listTopFolders(hubId, projectId) {
   return await aps.apiGet(u);
 }
 
+async function findProjectByName(hubId, name) {
+  if (!hubId || !name) throw new Error('hubId y name son obligatorios');
+  if (name.trim().length < 2) throw new Error('name debe tener al menos 2 caracteres');
+
+  const projects = await listProjects(hubId, { all: true });
+  const needle = name.trim().toLowerCase();
+
+  return (projects.data || []).filter(p =>
+    (p.attributes?.name || '').toLowerCase().includes(needle)
+  );
+}
+
 // --- CONTENIDOS CARPETA ---
 async function listFolderContents(projectId, folderId, { all = false, limit = 200 } = {}) {
   const base = `/data/v1/projects/${encodeURIComponent(projectId)}/folders/${encodeURIComponent(folderId)}/contents`;
@@ -128,15 +140,15 @@ function parseStorageUrn(storageUrn) {
   // Lo decodificamos aquí para que encodeURIComponent al armar URLs
   // no produzca doble codificación (%24 → %2524).
   let objectName = m[2];
-  try { objectName = decodeURIComponent(objectName); } catch (_) {}
+  try { objectName = decodeURIComponent(objectName); } catch (_) { }
   return { bucketKey: m[1], objectName };
 }
 
 // ── Constantes para multipart upload ──
 const MULTIPART_THRESHOLD = 100 * 1024 * 1024;   // 100 MB: usa multipart por encima
-const CHUNK_SIZE           = 100 * 1024 * 1024;   // 100 MB por parte
-const MAX_URLS_BATCH       = 25;                   // máx URLs firmadas por petición APS
-const PART_PUT_RETRIES     = 3;                    // reintentos por parte
+const CHUNK_SIZE = 100 * 1024 * 1024;   // 100 MB por parte
+const MAX_URLS_BATCH = 25;                   // máx URLs firmadas por petición APS
+const PART_PUT_RETRIES = 3;                    // reintentos por parte
 
 // --- STORAGE + UPLOAD (Signed S3 Upload para ACC/WIP) ---
 async function uploadFileToStorage(storageUrn, localFilePath, opts = {}) {
@@ -242,7 +254,7 @@ async function _uploadMultipart(base, localFilePath, size, regionHeaders) {
   // 2) Subir cada parte secuencialmente con reintentos (bajo consumo de RAM)
   for (let i = 0; i < numParts; i++) {
     const start = i * CHUNK_SIZE;
-    const end   = Math.min(start + CHUNK_SIZE, size) - 1; // inclusivo
+    const end = Math.min(start + CHUNK_SIZE, size) - 1; // inclusivo
     const partSize = end - start + 1;
 
     let lastErr;
@@ -570,5 +582,6 @@ module.exports = {
   getProjectFilesFolderId,
   ensureFolderByPath,
   getTopFoldersByProjectId,
-  waitUntilDmProjectExists
+  waitUntilDmProjectExists,
+  findProjectByName
 };

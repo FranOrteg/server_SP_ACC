@@ -15,5 +15,6 @@ router.get('/list', ctrl.list);
 router.get('/tree', ctrl.projectTree);
 router.get('/folder-by-path', ctrl.folderByPath);
 router.get('/project-info', ctrl.projectInfo);
+router.get('/find-project-by-name', ctrl.findProjectByName);
 
 module.exports = router;
