@@ -57,6 +57,9 @@ typings/
 # dotenv environment variables file
 .env.*
 
+# Token 3LO persistido en disco (contiene refresh_token sensible)
+data/.aps_token.json
+
 # next.js build output
 .next
 

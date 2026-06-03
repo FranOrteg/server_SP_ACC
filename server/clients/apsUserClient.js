@@ -1,6 +1,8 @@
 // clients/apsUserClient.js
 const axios = require('axios');
 const qs = require('querystring');
+const fs = require('fs');
+const path = require('path');
 const { mk } = require('../helpers/logger');
 
 const log = mk('APS-USER');
@@ -14,8 +16,36 @@ const AUTH_BASE = `${APS_BASE}/authentication/v2`;
 const HTTP_PAYLOAD_MODE = (process.env.APS_HTTP_PAYLOAD || 'errors').toLowerCase(); 
 // 'none' | 'errors' | 'all'
 
-// Sencillo almacén en memoria (cámbialo a DB en producción)
+// ---------- Persistencia en disco ----------
+
+const TOKEN_FILE = path.resolve(__dirname, '../data/.aps_token.json');
+
+function persistToken() {
+  if (!userToken) return;
+  try {
+    fs.writeFileSync(TOKEN_FILE, JSON.stringify(userToken), 'utf8');
+  } catch (e) {
+    log.warn(`No se pudo escribir el token en disco: ${e.message}`);
+  }
+}
+
+function loadTokenFromDisk() {
+  try {
+    if (!fs.existsSync(TOKEN_FILE)) return;
+    const raw = fs.readFileSync(TOKEN_FILE, 'utf8');
+    const tok = JSON.parse(raw);
+    if (tok?.refresh_token) {
+      userToken = tok;
+      log.info('Token 3LO restaurado desde disco');
+    }
+  } catch (e) {
+    log.warn(`No se pudo leer el token desde disco: ${e.message}`);
+  }
+}
+
+// Almacén en memoria; se inicializa desde disco al cargar el módulo
 let userToken = null; // { access_token, refresh_token, expires_at }
+loadTokenFromDisk();
 
 function isValid(tok) {
   return tok && tok.access_token && Date.now() < (tok.expires_at - 30_000);
@@ -112,6 +142,7 @@ async function exchangeCodeForToken(code) {
       refresh_token: tok.refresh_token,
       expires_at: Date.now() + (tok.expires_in * 1000)
     };
+    persistToken();
     log.info(`POST ${url} 200 in ${Date.now() - started}ms (token 3LO obtenido)`);
     return userToken;
   } catch (err) {
@@ -144,6 +175,7 @@ async function refreshIfNeeded() {
       refresh_token: tok.refresh_token || userToken.refresh_token,
       expires_at: Date.now() + (tok.expires_in * 1000)
     };
+    persistToken();
     log.debug(`POST ${url} 200 in ${Date.now() - started}ms (refresh ok)`);
     return userToken.access_token;
   } catch (err) {
@@ -228,6 +260,9 @@ async function apiDelete(url, config = {}) {
 
 // Helpers para router OAuth
 function hasUserToken() { return !!userToken?.access_token; }
-function clearUserToken() { userToken = null; }
+function clearUserToken() {
+  userToken = null;
+  try { fs.unlinkSync(TOKEN_FILE); } catch { }
+}
 
 module.exports = { exchangeCodeForToken, apiGet, apiPost, apiPatch, apiDelete, hasUserToken, clearUserToken, peekToken };

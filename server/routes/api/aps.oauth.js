@@ -39,6 +39,16 @@ router.get('/login', (req, res) => {
   res.redirect(url);
 });
 
+// GET /api/oauth/status
+router.get('/status', (req, res) => {
+  const tok = userAps.peekToken();
+  if (tok?.access_token) {
+    res.json({ authenticated: true, expiresAt: tok.expires_at });
+  } else {
+    res.json({ authenticated: false, expiresAt: null });
+  }
+});
+
 // GET /api/oauth/callback
 router.get('/callback', async (req, res, next) => {
   try {
