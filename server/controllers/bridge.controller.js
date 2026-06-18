@@ -470,15 +470,16 @@ async function spToNewAccProjectStream(req, res) {
 
     let Name = null;
     let TimeLabitcode = null;
+    let projectName = null;
 
     const rows = await db.query('SELECT Name,TimeLabitcode FROM projects WHERE FolderLabitCode = ? LIMIT 1', [siteName]);
     if (rows && rows.length > 0) {
       Name = rows[0].Name;
       TimeLabitcode = rows[0].TimeLabitcode;
 
-      let projectName = `${TimeLabitcode}_${siteName}_${Name}`;
+      projectName = `${TimeLabitcode}_${siteName}_${Name}`;
     }else {
-      let projectName = `${siteName} SP`;
+      projectName = `${siteName} SP`;
     }
 
 
