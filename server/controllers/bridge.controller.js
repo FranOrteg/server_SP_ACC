@@ -6,6 +6,7 @@ const acc = require('../services/acc.service');
 const accAdmin = require('../services/admin.acc.service');
 const spAdmin = require('../services/admin.sp.service');
 const apsUser = require('../clients/apsUserClient');
+const db = require('../config/mysql');
 const { graphGet } = require('../clients/graphClient');
 const logger = require('../helpers/logger').mk('BRIDGE');
 const { setupSSE, cancelSession, getSessionInfo, listActiveSessions, STEPS_TREE_COPY } = require('../helpers/progressEmitter');
@@ -466,7 +467,20 @@ async function spToNewAccProjectStream(req, res) {
       res.end();
       return;
     }
-    const projectName = `${siteName} SP`;
+
+    let Name = null;
+    let TimeLabitcode = null;
+
+    const rows = await db.query('SELECT Name,TimeLabitcode FROM projects WHERE FolderLabitCode = ? LIMIT 1', [siteName]);
+    if (rows && rows.length > 0) {
+      Name = rows[0].Name;
+      TimeLabitcode = rows[0].TimeLabitcode;
+
+      let projectName = `${TimeLabitcode}_${siteName}_${Name}`;
+    }else {
+      let projectName = `${siteName} SP`;
+    }
+
 
     emitter.progress({
       currentStep,
