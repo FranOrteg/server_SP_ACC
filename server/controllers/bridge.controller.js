@@ -11,6 +11,11 @@ const { graphGet } = require('../clients/graphClient');
 const logger = require('../helpers/logger').mk('BRIDGE');
 const { setupSSE, cancelSession, getSessionInfo, listActiveSessions, STEPS_TREE_COPY } = require('../helpers/progressEmitter');
 
+ // Variable global para almacenar el nombre del proyecto ACC
+let projectName = null;
+
+// ----------------------------------------------------------------
+
 async function spToAcc(req, res, next) {
   try {
     const src = { ...req.query, ...(req.body || {}) };
@@ -102,8 +107,21 @@ async function spToNewAccProject(req, res, next) {
         error: 'No se pudo resolver el nombre del sitio de SharePoint',
       });
     }
+
+
     // Nombre del proyecto ACC
-    const projectName = `${siteName} SP`;
+    let Name = null;
+    let TimeLabitcode = null;
+
+    const rows = await db.query('SELECT Name,TimeLabitcode FROM projects WHERE FolderLabitCode = ? LIMIT 1', [siteName]);
+    if (rows && rows.length > 0) {
+      Name = rows[0].Name;
+      TimeLabitcode = rows[0].TimeLabitcode;
+
+      projectName = `${TimeLabitcode}_${siteName}_${Name}`;
+    }else {
+      projectName = `${siteName} SP`;
+    }
 
     // 3) Crear proyecto ACC (sin plantilla) – esto ya espera aprovisionamiento DM
     const created = await accAdmin.createProject({
@@ -467,21 +485,6 @@ async function spToNewAccProjectStream(req, res) {
       res.end();
       return;
     }
-
-    let Name = null;
-    let TimeLabitcode = null;
-    let projectName = null;
-
-    const rows = await db.query('SELECT Name,TimeLabitcode FROM projects WHERE FolderLabitCode = ? LIMIT 1', [siteName]);
-    if (rows && rows.length > 0) {
-      Name = rows[0].Name;
-      TimeLabitcode = rows[0].TimeLabitcode;
-
-      projectName = `${TimeLabitcode}_${siteName}_${Name}`;
-    }else {
-      projectName = `${siteName} SP`;
-    }
-
 
     emitter.progress({
       currentStep,
