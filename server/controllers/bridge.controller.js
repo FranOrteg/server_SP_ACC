@@ -11,11 +11,6 @@ const { graphGet } = require('../clients/graphClient');
 const logger = require('../helpers/logger').mk('BRIDGE');
 const { setupSSE, cancelSession, getSessionInfo, listActiveSessions, STEPS_TREE_COPY } = require('../helpers/progressEmitter');
 
- // Variable global para almacenar el nombre del proyecto ACC
-let projectName = null;
-
-// ----------------------------------------------------------------
-
 async function spToAcc(req, res, next) {
   try {
     const src = { ...req.query, ...(req.body || {}) };
@@ -112,6 +107,7 @@ async function spToNewAccProject(req, res, next) {
     // Nombre del proyecto ACC
     let Name = null;
     let TimeLabitcode = null;
+    let projectName = null;
 
     const rows = await db.query('SELECT Name,TimeLabitcode FROM projects WHERE FolderLabitCode = ? LIMIT 1', [siteName]);
     if (rows && rows.length > 0) {
@@ -119,7 +115,7 @@ async function spToNewAccProject(req, res, next) {
       TimeLabitcode = rows[0].TimeLabitcode;
 
       projectName = `${TimeLabitcode}_${siteName}_${Name}`;
-    }else {
+    } else {
       projectName = `${siteName} SP`;
     }
 
@@ -385,7 +381,7 @@ async function ensureProjectMemberLocal({ projectId, email, makeProjectAdmin, gr
   // Convertir nivel a access de Autodesk
   const lvl = String(grantDocs || 'viewer').toLowerCase();
   const access = lvl === 'admin' ? 'administrator' : (lvl === 'member' ? 'member' : 'viewer');
-  
+
   // IMPORTANTE: Todos los productos deben tener el mismo nivel de acceso
   // La API de Autodesk rechaza mezclar 'member' con 'administrator'
   products.push({ key: 'docs', access });
@@ -437,9 +433,9 @@ async function cloneMembersFallback({ fromProjectId, toProjectId, notify = false
 async function spToNewAccProjectStream(req, res) {
   // Configurar SSE
   const { sessionId, emitter } = setupSSE(req, res);
-  
+
   logger.info(`[SSE] Iniciando sesión de migración: ${sessionId}`);
-  
+
   let partialResult = null;
   let currentStep = 'reading';
 
@@ -469,7 +465,7 @@ async function spToNewAccProjectStream(req, res) {
       message: 'Iniciando lectura de SharePoint...',
       force: true
     });
-    
+
     emitter.checkCancellation();
 
     // 2) Nombre del sitio SP → nombre del proyecto ACC
@@ -486,12 +482,23 @@ async function spToNewAccProjectStream(req, res) {
       return;
     }
 
+    let projectName = `${siteName} SP`;
+
+    const rows = await db.query(
+      'SELECT Name, TimeLabitcode FROM projects WHERE FolderLabitCode = ? LIMIT 1',
+      [siteName]
+    );
+
+    if (rows?.length > 0) {
+      projectName = `${rows[0].TimeLabitcode}_${siteName}_${rows[0].Name}`;
+    }
+
     emitter.progress({
       currentStep,
       stepProgress: 60,
       message: `Sitio encontrado: ${siteName}`
     });
-    
+
     emitter.checkCancellation();
 
     // ===== FASE 2: PROCESSING =====
@@ -519,7 +526,7 @@ async function spToNewAccProjectStream(req, res) {
       stepProgress: 50,
       message: `Proyecto creado: ${created.name}`
     });
-    
+
     emitter.checkCancellation();
 
     partialResult = {
@@ -540,7 +547,7 @@ async function spToNewAccProjectStream(req, res) {
       stepProgress: 100,
       message: 'Estructura del proyecto preparada'
     });
-    
+
     emitter.checkCancellation();
 
     // ===== FASE 3: UPLOADING =====
@@ -605,10 +612,10 @@ async function spToNewAccProjectStream(req, res) {
     });
 
     partialResult.copy = { ...copyResult, log: copyLog };
-    
-    emitter.updateStats({ 
-      bytes: copyResult.summary?.bytesUploaded || 0, 
-      files: copyResult.summary?.filesUploaded || 0 
+
+    emitter.updateStats({
+      bytes: copyResult.summary?.bytesUploaded || 0,
+      files: copyResult.summary?.filesUploaded || 0
     });
 
     // ===== FASE 4: MEMBERS =====
@@ -624,7 +631,7 @@ async function spToNewAccProjectStream(req, res) {
         message: 'Configurando miembros del proyecto...',
         force: true
       });
-      
+
       emitter.checkCancellation();
 
       try {
@@ -670,9 +677,9 @@ async function spToNewAccProjectStream(req, res) {
 
             for (let i = 0; i < users.length; i++) {
               const u = users[i];
-              
+
               emitter.checkCancellation();
-              
+
               emitter.progress({
                 currentStep,
                 stepProgress: Math.round((i / total) * 100),
@@ -726,21 +733,21 @@ async function spToNewAccProjectStream(req, res) {
         message: 'Clonando miembros desde otro proyecto...',
         force: true
       });
-      
+
       emitter.checkCancellation();
 
       const canCallServiceClone = typeof accAdmin.cloneProjectMembers === 'function';
       cloneSummary = canCallServiceClone
         ? await accAdmin.cloneProjectMembers({
-            fromProjectId: cloneMembersFromProjectId,
-            toProjectId: created.projectId,
-            notify: false,
-          })
+          fromProjectId: cloneMembersFromProjectId,
+          toProjectId: created.projectId,
+          notify: false,
+        })
         : await cloneMembersFallback({
-            fromProjectId: cloneMembersFromProjectId,
-            toProjectId: created.projectId,
-            notify: false,
-          });
+          fromProjectId: cloneMembersFromProjectId,
+          toProjectId: created.projectId,
+          notify: false,
+        });
       membersAdded = cloneSummary?.added || 0;
     }
 
@@ -761,7 +768,7 @@ async function spToNewAccProjectStream(req, res) {
       message: 'Verificando migración...',
       force: true
     });
-    
+
     emitter.checkCancellation();
 
     emitter.progress({
@@ -793,7 +800,7 @@ async function spToNewAccProjectStream(req, res) {
       membersAdded
     });
 
-    logger.info(`[SSE] Migración completada: ${sessionId}`, { 
+    logger.info(`[SSE] Migración completada: ${sessionId}`, {
       duration: stats.duration,
       files: stats.filesProcessed,
       bytes: stats.bytesTransferred
@@ -1029,14 +1036,14 @@ async function spTreeToAccStream(req, res) {
  */
 function cancelMigrationSession(req, res) {
   const { sessionId } = req.params;
-  
+
   // Debug: listar todas las sesiones activas
   const allSessions = listActiveSessions();
   logger.debug(`[CANCEL] Buscando sesión: ${sessionId}`);
   logger.debug(`[CANCEL] Sesiones activas (${allSessions.length}):`, allSessions.map(s => s.sessionId));
-  
+
   const result = cancelSession(sessionId);
-  
+
   if (result.ok) {
     logger.info(`[SSE] Cancelación solicitada para sesión: ${sessionId}`);
     res.json(result);
@@ -1062,7 +1069,7 @@ function listMigrationSessions(req, res) {
 function getMigrationSession(req, res) {
   const { sessionId } = req.params;
   const info = getSessionInfo(sessionId);
-  
+
   if (info) {
     res.json(info);
   } else {
@@ -1070,9 +1077,9 @@ function getMigrationSession(req, res) {
   }
 }
 
-module.exports = { 
-  spToAcc, 
-  spTreeToAcc, 
+module.exports = {
+  spToAcc,
+  spTreeToAcc,
   spToNewAccProject,
   // Endpoints de streaming SSE
   spToNewAccProjectStream,
