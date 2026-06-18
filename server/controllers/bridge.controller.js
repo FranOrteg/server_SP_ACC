@@ -11,6 +11,45 @@ const { graphGet } = require('../clients/graphClient');
 const logger = require('../helpers/logger').mk('BRIDGE');
 const { setupSSE, cancelSession, getSessionInfo, listActiveSessions, STEPS_TREE_COPY } = require('../helpers/progressEmitter');
 
+async function resolveAccProjectName(siteName) {
+  const normalizedSiteName = String(siteName || '').trim();
+  if (!normalizedSiteName) throw new Error('siteName vacío al resolver nombre de proyecto ACC');
+
+  const rows = await db.query(
+    `SELECT
+      Name AS projectDisplayName,
+      TimeLabitCode AS timeLabitCode
+    FROM projects
+    WHERE TRIM(UPPER(FolderLabitCode)) = TRIM(UPPER(?))
+    LIMIT 1`,
+    [normalizedSiteName]
+  );
+
+  if (rows === null) {
+    throw new Error(`MySQL no disponible o consulta fallida al resolver FolderLabitCode=${normalizedSiteName}`);
+  }
+
+  if (rows.length === 0) {
+    logger.warn('No se encontró coincidencia en MySQL para FolderLabitCode', { siteName: normalizedSiteName });
+    return `${normalizedSiteName} SP`;
+  }
+
+  const row = rows[0] || {};
+  const projectDisplayName = String(row.projectDisplayName || '').trim();
+  const timeLabitCode = String(row.timeLabitCode || '').trim();
+
+  if (!projectDisplayName || !timeLabitCode) {
+    logger.warn('Fila incompleta en MySQL para nombre de proyecto ACC', {
+      siteName: normalizedSiteName,
+      hasProjectDisplayName: !!projectDisplayName,
+      hasTimeLabitCode: !!timeLabitCode,
+    });
+    return `${normalizedSiteName} SP`;
+  }
+
+  return `${timeLabitCode}_${normalizedSiteName}_${projectDisplayName}`;
+}
+
 async function spToAcc(req, res, next) {
   try {
     const src = { ...req.query, ...(req.body || {}) };
@@ -103,21 +142,7 @@ async function spToNewAccProject(req, res, next) {
       });
     }
 
-
-    // Nombre del proyecto ACC
-    let Name = null;
-    let TimeLabitcode = null;
-    let projectName = null;
-
-    const rows = await db.query('SELECT Name,TimeLabitcode FROM projects WHERE FolderLabitCode = ? LIMIT 1', [siteName]);
-    if (rows && rows.length > 0) {
-      Name = rows[0].Name;
-      TimeLabitcode = rows[0].TimeLabitcode;
-
-      projectName = `${TimeLabitcode}_${siteName}_${Name}`;
-    } else {
-      projectName = `${siteName} SP`;
-    }
+    const projectName = await resolveAccProjectName(siteName);
 
     // 3) Crear proyecto ACC (sin plantilla) – esto ya espera aprovisionamiento DM
     const created = await accAdmin.createProject({
@@ -482,16 +507,7 @@ async function spToNewAccProjectStream(req, res) {
       return;
     }
 
-    let projectName = `${siteName} SP`;
-
-    const rows = await db.query(
-      'SELECT Name, TimeLabitcode FROM projects WHERE FolderLabitCode = ? LIMIT 1',
-      [siteName]
-    );
-
-    if (rows?.length > 0) {
-      projectName = `${rows[0].TimeLabitcode}_${siteName}_${rows[0].Name}`;
-    }
+    const projectName = await resolveAccProjectName(siteName);
 
     emitter.progress({
       currentStep,
