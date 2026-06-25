@@ -13,6 +13,126 @@
       "vars": {},
       "createdAt": "2026-02-17T09:53:18.174Z",
       "updatedAt": "2026-02-17T09:53:18.174Z"
+    },
+    {
+      "twinId": "PRJ-CIMD03-zaragoza-6",
+      "acc": {
+        "projectId": "31aefcb5-96ab-43e3-9194-c3a02e49ab82",
+        "hubId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/31aefcb5-96ab-43e3-9194-c3a02e49ab82"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,26887ed8-d800-48e4-a87d-24a615692ca8,1b14e7a1-057b-423a-b800-742443ace687"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-03-05T09:47:44.073Z",
+      "updatedAt": "2026-03-05T09:47:44.073Z"
+    },
+    {
+      "twinId": "PRJ-CHMD01-segregacion-claudio-coello-51",
+      "acc": {
+        "projectId": "d41d2a7a-df68-44b5-a2ab-2d10f4033218",
+        "hubId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/d41d2a7a-df68-44b5-a2ab-2d10f4033218"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,538fcbce-fc5e-41a5-b751-b7d2b1da0cf1,5a03b09e-7098-4617-96b5-c496a8e74c4c"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-03-23T12:21:42.716Z",
+      "updatedAt": "2026-03-23T12:21:42.716Z"
+    },
+    {
+      "twinId": "PRJ-CHMD02-velazquez-54",
+      "acc": {
+        "projectId": "03a73549-85e1-405b-ac71-6b874d6d2692",
+        "hubId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/03a73549-85e1-405b-ac71-6b874d6d2692"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,2727bdad-87bf-494d-bcf7-b56035a95d1d,5a03b09e-7098-4617-96b5-c496a8e74c4c"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-03-24T09:21:58.162Z",
+      "updatedAt": "2026-03-24T09:21:58.162Z"
+    },
+    {
+      "twinId": "PRJ-CTPN01-renovacion-de-hotel",
+      "acc": {
+        "projectId": "87b1f383-595d-47c9-8d42-0548abe329b7",
+        "hubId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/87b1f383-595d-47c9-8d42-0548abe329b7"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,a2890985-7907-4c81-bf8c-fe725c7c450f,5a03b09e-7098-4617-96b5-c496a8e74c4c"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-03-27T12:08:13.767Z",
+      "updatedAt": "2026-03-27T12:08:13.767Z"
+    },
+    {
+      "twinId": "PRJ-GNMD01-claudio-coello-60",
+      "acc": {
+        "projectId": "bee827bd-012e-436d-b06a-ae549d81093a",
+        "hubId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/bee827bd-012e-436d-b06a-ae549d81093a"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,b2d4c84c-c11f-4888-b3ce-5b8eb734c2b8,3292ca23-42f5-4302-8c97-19088470c773"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-04-13T08:32:49.777Z",
+      "updatedAt": "2026-04-13T08:32:49.777Z"
+    },
+    {
+      "twinId": "PRJ-BJMD01-nervion-11",
+      "acc": {
+        "projectId": "53597e0e-1f5e-4451-abcf-1ae76243bcec",
+        "hubId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/53597e0e-1f5e-4451-abcf-1ae76243bcec"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,11aff08a-2eec-4934-bcd7-66b6da4f923b,0c4f6da5-296f-4f26-9e48-c2675c274a8d"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-04-20T11:47:09.143Z",
+      "updatedAt": "2026-04-20T11:47:09.143Z"
+    },
+    {
+      "twinId": "PRJ-CHMD03-bilbao-7",
+      "acc": {
+        "projectId": "ab48b0c9-326e-446c-8a27-f97e135b936c",
+        "hubId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/ab48b0c9-326e-446c-8a27-f97e135b936c"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,263252c3-411f-4896-a57b-f2ab3487c847,e1e049af-906e-414c-b825-ea24b8c6e48c"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-06-04T14:41:30.098Z",
+      "updatedAt": "2026-06-04T14:41:30.098Z"
+    },
+    {
+      "twinId": "PRJ-CAMD01-estudio-patologias-estructurales",
+      "acc": {
+        "projectId": "7d23bf5e-5326-48fb-8462-efd00eac71d2",
+        "hubId": "1bb899d4-8dd4-42d8-aefd-6c0e35acd825",
+        "bim360Url": "https://acc.autodesk.com/docs/files/projects/7d23bf5e-5326-48fb-8462-efd00eac71d2"
+      },
+      "sp": {
+        "siteId": "labitgroup.sharepoint.com,d5cb8c60-f157-4b55-8fde-8d0e59501ba3,68b781ba-4029-4611-b416-a853bb9c1905"
+      },
+      "templateId": null,
+      "vars": {},
+      "createdAt": "2026-06-23T08:24:01.526Z",
+      "updatedAt": "2026-06-23T08:24:01.526Z"
     }
   ]
 }
